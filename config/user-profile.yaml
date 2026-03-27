@@ -1,0 +1,96 @@
+# PhoneBuddy — User Profile
+# Owner: Nick Stein
+# Created: 2026-03-23
+
+user:
+  # Identity
+  preferred_name: "Nick"
+  formal_name: "Nicholas"
+  first_name: "Nicholas"
+  middle_name: "Carl"
+  last_name: "Stein"
+  alternate_handle: "Bizcad"          # 30-year online identity, strong signal if caller knows it
+
+  # Phones
+  cell: "+19493943466"                 # iPhone — HITL escalation target
+  landline: null                       # skipping for now; will be Twilio number after port
+
+  # Admin access
+  safe_word: "Nick here 1852"          # spoken phrase — 4+ syllables, low collision risk
+  safe_word_alt: "bizcad1852"          # alternate — useful if first is misheard
+  safe_word_mode: "spoken_phrase"      # options: spoken_phrase | dtmf_pin | caller_id_only
+
+# Name formality scoring weights
+# Higher = more suspicious
+name_signals:
+  preferred_name: -0.20               # "Nick" — likely knows me
+  alternate_handle: -0.30             # "Bizcad" — definitely knows me
+  formal_name: +0.35                  # "Nicholas" — database pull
+  last_name_only: +0.40               # "Mr. Stein" or "Stein" — solicitation
+  full_formal: +0.50                  # "Nicholas Stein" — cold call list
+  no_name: 0.00                       # neutral
+
+# Contacts (seed list — grows over time)
+contacts:
+  # Format: name, numbers (list), tags, keyword_match (optional org patterns)
+  - name: "Nick (self)"
+    numbers: ["+19493943466"]          # iPhone — forward/admin immediately
+    tags: ["self"]
+
+  - name: "Kaiser Permanente"
+    numbers: []                        # they call from unknown numbers
+    tags: ["medical", "insurance"]
+    keyword_match: ["kaiser", "permanente", "kp", "health plan"]
+
+  # Add family/friends here after MVP
+  # - name: "Mom"
+  #   numbers: ["+1XXXXXXXXXX"]
+  #   tags: ["family"]
+
+# Voice configuration
+voice:
+  receptionist:
+    provider: "elevenlabs"
+    voice_id: "TX3LPaxmHKxFdv7VOQHJ"  # ElevenLabs "Liam" — calm older male
+    # Alternatives to try:
+    # "pNInz6obpgDQGcFmaJgB" — Adam (smooth American male)
+    # "VR6AewLTigWG4xSOukaG" — Arnold (authoritative male)
+    # Note: No ElevenLabs voice is specifically tagged "California accent"
+    # Closest is a neutral West Coast American male — swap after account setup
+    model: "eleven_turbo_v2_5"        # low latency for real-time conversation
+    stability: 0.5
+    similarity_boost: 0.75
+
+  ivr:
+    provider: "azure"                  # deliberately robotic for junk callers
+    voice: "en-US-GuyNeural"
+    rate: "-5%"                        # slightly slower = more mechanical feel
+
+# Silence trap
+silence_trap:
+  initial_wait_sec: 3
+  prompt_wait_sec: 3
+  prompt_text: "Hello, can I help you?"
+
+# Classification thresholds
+thresholds:
+  solicitation_block: 0.60
+  scam_engage: 0.80
+  low_confidence_hitl: 0.40
+  max_classification_attempts: 3
+
+# Cost controls (GSD2 pattern: budget pressure + downgrade-only routing)
+cost:
+  max_claude_spend_per_call: 0.05      # hard ceiling — scam engagement can't run up the bill
+  max_scam_engagement_minutes: 5       # cut off even if budget not hit
+  model_routing:
+    light:    "claude-haiku-4-5-20251001"   # heuristics + name scoring + contact match
+    standard: "claude-haiku-4-5-20251001"   # unknown caller classification
+    heavy:    "claude-sonnet-4-6"           # scam engagement, admin mode, hold proxy
+    ceiling:  "claude-sonnet-4-6"           # never exceed this model (downgrade-only rule)
+
+# Telemetry
+telemetry:
+  enabled: true
+  local_log: "data/telemetry/calls.jsonl"
+  cloud_endpoint: null                 # set after cloud account setup
