@@ -931,6 +931,18 @@ def health():
     return {"status": "ok", "product": "PhoneBuddy", "version": "0.1.0"}
 
 
+@app.get("/debug-twiml")
+def debug_twiml():
+    """Return the TwiML that would be sent to Twilio for an inbound call."""
+    base_url = PUBLIC_URL or "NOT_SET"
+    twiml_url = f"{base_url}/tts?text=Hello&role=receptionist"
+    return {
+        "PUBLIC_URL": PUBLIC_URL,
+        "base_url": base_url,
+        "play_url": twiml_url,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
