@@ -52,7 +52,7 @@ app = FastAPI(title="PhoneBuddy", version="0.1.0")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CONFIG_PATH = os.environ.get("PHONEBUDDY_CONFIG", "config/user-profile.yaml")
-PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
 
 def load_config() -> dict:
     with open(CONFIG_PATH) as f:
