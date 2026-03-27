@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# PhoneBuddy runtime data — created by the app, never commit
+data/
+
+# Local secrets — never commit
+ProjectSecrets/
