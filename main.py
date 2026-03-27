@@ -52,6 +52,7 @@ app = FastAPI(title="PhoneBuddy", version="0.1.0")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CONFIG_PATH = os.environ.get("PHONEBUDDY_CONFIG", "config/user-profile.yaml")
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
 
 def load_config() -> dict:
     with open(CONFIG_PATH) as f:
@@ -266,7 +267,7 @@ async def inbound_call(
     # Answer with dead silence. Autodialers wait for voice activity.
     # Real humans say "Hello?" — we catch that in /call/classify.
     # A <Gather> with a long pause + speech detection handles both.
-    base_url = str(request.base_url).rstrip("/")
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play("Hello, I am Nicholas's personal assistant. This call may be recorded.", base_url)}
@@ -402,7 +403,7 @@ async def classify_call(
 async def _forward_to_cell(request: Request, call_sid: str, contact: dict, cfg: dict) -> Response:
     """Known contact — forward immediately with optional whisper briefing."""
     cell = cfg["user"]["cell"]
-    base_url = str(request.base_url).rstrip("/")
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     name = contact.get("name", "someone from your contacts")
     log.info(f"Forwarding to cell for contact '{name}'  SID={call_sid}")
 
@@ -422,7 +423,7 @@ async def _hold_and_brief(request: Request, call_sid: str, transcript: str,
                           classification: str, cfg: dict) -> Response:
     """Medical/professional — hold caller, call user cell with briefing."""
     cell = cfg["user"]["cell"]
-    base_url = str(request.base_url).rstrip("/")
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     log.info(f"Medical/professional hold  SID={call_sid}")
 
     await broadcast_dashboard({
@@ -480,7 +481,7 @@ async def _engage_scam(request: Request, call_sid: str, cfg: dict) -> Response:
 
 async def _ask_purpose(request: Request, call_sid: str, cfg: dict) -> Response:
     """Unknown caller — ask them to identify themselves."""
-    base_url = str(request.base_url).rstrip("/")
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play("Hello, thank you for calling. May I ask who is calling and the nature of your call?", base_url)}
@@ -496,7 +497,7 @@ async def _take_voicemail(request: Request, call_sid: str, cfg: dict) -> Respons
     """After max classification attempts — take a message."""
     log.info(f"Taking voicemail  SID={call_sid}")
     await broadcast_dashboard({"event": "voicemail", "sid": call_sid})
-    base_url = str(request.base_url).rstrip("/")
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play("I'm sorry, the person you are trying to reach is unavailable. Please leave a message after the tone.", base_url)}
@@ -515,7 +516,7 @@ async def admin_query(
 ):
     """Owner spoke a command in admin mode. Echo back a placeholder for now."""
     cfg = load_config()
-    base_url = str(request.base_url).rstrip("/")
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     query = SpeechResult.strip() or "I didn't catch that."
     log.info(f"Admin query  SID={CallSid}  query='{query}'")
 
@@ -600,7 +601,7 @@ async def _admin_mode_response(request: Request, call_sid: str,
     summary = f"Hello Nick. You have had {total_today} calls today. How can I help you?"
 
     # TODO Phase 2: query call log, trigger outbound hold proxy, etc.
-    base_url = str(request.base_url).rstrip("/")
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play(summary, base_url)}
@@ -621,7 +622,7 @@ async def whisper_briefing(request: Request, name: str = "someone"):
     """Plays briefing to Nick before the call is connected."""
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play(f"PhoneBuddy: {name} is on the line. Press any key to connect, or hang up to decline.", str(request.base_url).rstrip('/'))}
+  {_play(f"PhoneBuddy: {name} is on the line. Press any key to connect, or hang up to decline.", PUBLIC_URL or str(request.base_url).rstrip('/'))}
   <Gather numDigits="1" action="/call/whisper-response">
     <Pause length="5"/>
   </Gather>
