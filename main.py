@@ -290,12 +290,13 @@ async def inbound_call(
             "status": f"known contact: {first_name}",
         })
         _evolve_context(CallSid, From, "contact", "forwarded", cfg)
-        greeting = f"Hi {first_name}, this is Nick's assistant. I'm screening his calls today. Let me transfer you right now — one moment please."
+        greeting = f"Hi {first_name}, this is Nick's assistant. I'm getting him for you right now — one moment please."
         cell = cfg["user"]["cell"]
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play(greeting, base_url)}
-  <Dial callerId="{cfg['user'].get('landline') or cell}">
+  <Dial callerId="{cfg['user'].get('landline') or cell}"
+        action="{base_url}/call/dial-complete?name={first_name}">
     <Number url="{base_url}/call/whisper?name={first_name}">{cell}</Number>
   </Dial>
 </Response>"""
@@ -422,21 +423,16 @@ async def classify_call(
         _evolve_context(CallSid, caller_number, classification, "escalated_hitl", cfg)
         return await _hold_and_brief(request, CallSid, transcript_text, classification, cfg)
 
-    if suspicion >= thresholds["scam_engage"]:
-        _evolve_context(CallSid, caller_number, "scam", "engaging", cfg)
-        return await _engage_scam(request, CallSid, cfg)
-
-    if suspicion >= thresholds["solicitation_block"]:
-        _evolve_context(CallSid, caller_number, "solicitation", "declined", cfg)
-        return await _decline_solicitation(request, CallSid, cfg)
-
-    # Unknown / low suspicion — ask for more context (3-strikes loop)
+    # Every other caller — engage, collect, learn. No firewalls.
+    # Scammers, solicitors, unknowns all get the engagement path.
+    # Max attempts reached → voicemail (still captures their message).
     attempt = len(active_calls.get(CallSid, {}).get("transcript", []))
     if attempt >= thresholds["max_classification_attempts"]:
         _evolve_context(CallSid, caller_number, classification, "voicemail", cfg)
         return await _take_voicemail(request, CallSid, cfg)
 
-    return await _ask_purpose(request, CallSid, cfg)
+    _evolve_context(CallSid, caller_number, classification, "engaging", cfg)
+    return await _engage_caller(request, CallSid, classification, cfg)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -444,19 +440,21 @@ async def classify_call(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def _forward_to_cell(request: Request, call_sid: str, contact: dict, cfg: dict) -> Response:
-    """Known contact — forward immediately with optional whisper briefing."""
+    """Known contact — forward with warmth. Catch no-answer at /call/dial-complete."""
     cell = cfg["user"]["cell"]
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     name = contact.get("name", "someone from your contacts")
-    log.info(f"Forwarding to cell for contact '{name}'  SID={call_sid}")
+    first_name = name.split()[0]
+    log.info(f"Forwarding to cell for contact '{first_name}'  SID={call_sid}")
 
-    await broadcast_dashboard({"event": "forwarding", "sid": call_sid, "contact": name})
+    await broadcast_dashboard({"event": "forwarding", "sid": call_sid, "contact": first_name})
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play_filler("one-moment(flat).wav", base_url)}
-  <Dial callerId="{cfg['user'].get('landline') or cfg['user']['cell']}">
-    <Number url="{base_url}/call/whisper?name={name}">{cell}</Number>
+  {_play(f"Hi {first_name}, this is Nick's assistant. I'm getting him for you right now — one moment please.", base_url)}
+  <Dial callerId="{cfg['user'].get('landline') or cfg['user']['cell']}"
+        action="{base_url}/call/dial-complete?name={first_name}">
+    <Number url="{base_url}/call/whisper?name={first_name}">{cell}</Number>
   </Dial>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
@@ -486,52 +484,29 @@ async def _hold_and_brief(request: Request, call_sid: str, transcript: str,
     return Response(content=twiml, media_type="application/xml")
 
 
-async def _decline_solicitation(request: Request, call_sid: str, cfg: dict) -> Response:
-    """Solicitation — polite robotic decline."""
-    log.info(f"Declining solicitation  SID={call_sid}")
-    await broadcast_dashboard({"event": "declined", "sid": call_sid, "reason": "solicitation"})
-    _emit_telemetry(call_sid, "solicitation", "declined", cfg)
+async def _engage_caller(request: Request, call_sid: str, classification: str, cfg: dict) -> Response:
+    """
+    Unified engagement — every caller deserves a chance.
+    Tai chi principle: yield, collect, return. No firewalls.
+    Scammers, solicitors, unknowns all get engaged — their patterns are training data.
+    Everyone who calls is also a potential PhoneBuddy customer.
+    """
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    log.info(f"Engaging caller  SID={call_sid}  classification={classification}")
+    await broadcast_dashboard({"event": "engaging", "sid": call_sid, "classification": classification})
+    _emit_telemetry(call_sid, classification, "engaging", cfg)
 
-    twiml = """<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Joey">
-    Thank you for calling. We are not interested at this time.
-    Please remove this number from your list. Goodbye.
-  </Say>
-  <Hangup/>
-</Response>"""
-    return Response(content=twiml, media_type="application/xml")
-
-
-async def _engage_scam(request: Request, call_sid: str, cfg: dict) -> Response:
-    """Scam — slow deliberate engagement to waste caller's time."""
-    log.info(f"Engaging scam caller  SID={call_sid}")
-    await broadcast_dashboard({"event": "engaging_scam", "sid": call_sid})
-
-    # Rotate through engagement responses to seem like a confused older adult
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joey">
-    Oh, yes, hello. Could you repeat that? I want to make sure I understand.
-    My hearing is not what it used to be.
-  </Say>
-  <Gather input="speech" action="/call/classify" speechTimeout="4" timeout="8">
+  {_play("I don't think we've spoken before. Are you by any chance interested in hearing about PhoneBuddy — an AI assistant that handles calls just like this one?", base_url)}
+  <Gather input="speech" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="8" language="en-US">
     <Pause length="1"/>
   </Gather>
-  <Hangup/>
-</Response>"""
-    return Response(content=twiml, media_type="application/xml")
-
-
-async def _ask_purpose(request: Request, call_sid: str, cfg: dict) -> Response:
-    """Unknown caller — ask them to identify themselves."""
-    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
-    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  {_play_filler("hello(answering).wav", base_url)}
-  {_play("Thank you for calling. May I ask who is calling and the nature of your call?", base_url)}
+  {_play("No problem at all. May I ask your name and the purpose of your call? I want to make sure Nick gets your message.", base_url)}
   <Gather input="speech" action="{base_url}/call/classify"
-          speechTimeout="auto" timeout="10">
+          speechTimeout="auto" timeout="8" language="en-US">
+    <Pause length="1"/>
   </Gather>
   <Redirect>{base_url}/call/voicemail</Redirect>
 </Response>"""
@@ -572,6 +547,86 @@ async def admin_query(
   {_play(reply, base_url)}
   <Hangup/>
 </Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/call/dial-complete")
+async def dial_complete(
+    request: Request,
+    CallSid: str = Form(default=""),
+    DialCallStatus: str = Form(default=""),
+    From: str = Form(default=""),
+    name: str = "them",
+):
+    """
+    Twilio fires this when a forwarded dial completes.
+    If Nick answered — nothing to do. If not — handle with warmth, no dead air.
+    """
+    cfg = load_config()
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+
+    if DialCallStatus == "completed":
+        return Response(content="<?xml version='1.0'?><Response/>", media_type="application/xml")
+
+    log.info(f"No answer  SID={CallSid}  status={DialCallStatus}  from={From}  name={name}")
+    await broadcast_dashboard({"event": "no_answer", "sid": CallSid, "dial_status": DialCallStatus, "name": name})
+
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play_filler("im-sorry.wav", base_url)}
+  {_play(f"Nick's not available right now, but I didn't want to leave you hanging. Would you like to leave him a message, or shall I have him call you back?", base_url)}
+  <Gather input="speech" action="{base_url}/call/classify"
+          speechTimeout="auto" timeout="8" language="en-US">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/voicemail</Redirect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/call/engage-response")
+async def engage_response(
+    request: Request,
+    CallSid: str = Form(default=""),
+    From: str = Form(default=""),
+    SpeechResult: str = Form(default=""),
+):
+    """
+    Caller responded to the PhoneBuddy pitch.
+    Yes → lead capture. No → still capture name and intent. Either way — data.
+    """
+    cfg = load_config()
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    speech = SpeechResult.strip().lower()
+
+    yes_signals = ["yes", "yeah", "sure", "absolutely", "interested", "tell me", "what is", "sounds good", "why not"]
+    is_yes = any(s in speech for s in yes_signals)
+
+    log.info(f"Engage response  SID={CallSid}  from={From}  yes={is_yes}  speech='{speech}'")
+    await broadcast_dashboard({"event": "lead_response", "sid": CallSid, "from": From, "interested": is_yes})
+
+    if is_yes:
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play_filler("oh-yeah(affirmative).wav", base_url)}
+  {_play("PhoneBuddy answers your calls in your own voice, screens out the noise, captures every lead, and lets you call back on your terms. May I get your name and the best way to follow up with you?", base_url)}
+  <Gather input="speech" action="{base_url}/call/classify"
+          speechTimeout="auto" timeout="10" language="en-US">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/voicemail</Redirect>
+</Response>"""
+    else:
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("No problem at all. May I ask your name and the purpose of your call today? I want to make sure Nick gets your message.", base_url)}
+  <Gather input="speech" action="{base_url}/call/classify"
+          speechTimeout="auto" timeout="8" language="en-US">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/voicemail</Redirect>
+</Response>"""
+
     return Response(content=twiml, media_type="application/xml")
 
 
