@@ -32,6 +32,7 @@ load_dotenv(Path(__file__).parent / ".env")
 from fastapi import FastAPI, Request, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 import httpx
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ log = logging.getLogger("phonebuddy")
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="PhoneBuddy", version="0.1.0")
+templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CONFIG_PATH = os.environ.get("PHONEBUDDY_CONFIG", "config/user-profile.yaml")
@@ -806,9 +808,49 @@ async def dashboard_ws(websocket: WebSocket):
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
-    """Live call activity dashboard — opens in browser at localhost:8000/dashboard"""
-    return HTMLResponse(DASHBOARD_HTML)
+async def dashboard(request: Request):
+    """Live call activity dashboard."""
+    cfg = load_config()
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "user_name": cfg.get("user", {}).get("name", "Nick"),
+    })
+
+
+@app.get("/calls", response_class=HTMLResponse)
+async def calls_page(request: Request):
+    return templates.TemplateResponse("calls.html", {"request": request})
+
+
+@app.get("/contacts", response_class=HTMLResponse)
+async def contacts_page(request: Request):
+    return templates.TemplateResponse("contacts.html", {"request": request})
+
+
+@app.get("/voicemail", response_class=HTMLResponse)
+async def voicemail_page(request: Request):
+    return templates.TemplateResponse("voicemail.html", {"request": request})
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    cfg = load_config()
+    return templates.TemplateResponse("settings.html", {
+        "request": request,
+        "user_name": cfg.get("user", {}).get("name", "Nick"),
+        "twilio_number": os.environ.get("TWILIO_NUMBER", ""),
+        "safe_word": cfg.get("safe_word", ""),
+        "greeting": cfg.get("greeting", ""),
+    })
+
+
+@app.get("/onboarding", response_class=HTMLResponse)
+async def onboarding_page(request: Request):
+    cfg = load_config()
+    return templates.TemplateResponse("onboarding.html", {
+        "request": request,
+        "user_name": cfg.get("user", {}).get("name", ""),
+    })
 
 
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -941,6 +983,53 @@ def debug_twiml():
         "base_url": base_url,
         "play_url": twiml_url,
     }
+
+
+@app.get("/for/{slug}", response_class=HTMLResponse)
+async def landing_page(request: Request, slug: str):
+    """Parameterized landing page — /for/phonebuddy, /for/nick, etc."""
+    segments_dir = Path(os.environ.get(
+        "SEGMENTS_DIR",
+        str(Path(__file__).parent / "config" / "segments")
+    ))
+    seg_file = segments_dir / f"{slug}.yaml"
+    if not seg_file.exists():
+        # Fallback to product page
+        seg_file = segments_dir / "phonebuddy-product.yaml"
+    with open(seg_file) as f:
+        seg = yaml.safe_load(f)
+    return templates.TemplateResponse("landing.html", {"request": request, **seg})
+
+
+@app.post("/callback-request")
+async def callback_request(request: Request):
+    """Log a callback request from the landing page."""
+    body = await request.json()
+    number = body.get("number", "").strip()
+    segment = body.get("segment", "unknown")
+    if not number:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="number required")
+    record = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "number": number,
+        "segment": segment,
+        "type": "callback_request",
+    }
+    cb_dir = Path("data/callbacks")
+    cb_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    (cb_dir / f"{ts}.json").write_text(json.dumps(record, indent=2))
+    log.info(f"Callback request: {number} from segment={segment}")
+    return {"status": "ok"}
+
+
+# ── Landing page root redirect ─────────────────────────────────────────────────
+@app.get("/", response_class=HTMLResponse)
+async def root(request: Request):
+    """Root URL → product landing page."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/for/phonebuddy")
 
 
 if __name__ == "__main__":
