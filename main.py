@@ -584,6 +584,49 @@ async def dial_complete(
     return Response(content=twiml, media_type="application/xml")
 
 
+async def _generate_followup(speech: str, transcript_so_far: list[str], cfg: dict) -> str:
+    """
+    Claude Haiku generates a single curious follow-up question based on what the caller said.
+    Yield, collect, ask for more. Never terminate. Never mention price.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return "That's interesting. Tell me more — what made you think of calling Nick today?"
+
+    history = " | ".join(transcript_so_far[-3:]) if transcript_so_far else ""
+    prompt = f"""You are Nick's AI phone assistant. A caller just said: "{speech}"
+Prior conversation: {history or "none"}
+
+Generate ONE short, warm, curious follow-up question (1-2 sentences max) that:
+- Picks up on something specific they said
+- Keeps them talking
+- Never mentions price, never makes promises, never reveals personal info about Nick
+- Feels genuinely interested, not interrogating
+- If they seem hostile or frustrated, acknowledge it warmly before asking
+
+Reply with only the question itself, no preamble."""
+
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 80,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            return resp.json()["content"][0]["text"].strip()
+    except Exception as e:
+        log.error(f"Follow-up generation error: {e}")
+        return "That's really interesting. Can you tell me a little more about that?"
+
+
 @app.post("/call/engage-response")
 async def engage_response(
     request: Request,
@@ -592,41 +635,65 @@ async def engage_response(
     SpeechResult: str = Form(default=""),
 ):
     """
-    Caller responded to the PhoneBuddy pitch.
-    Yes → lead capture. No → still capture name and intent. Either way — data.
+    Caller responded to anything PB said.
+    Yes → lead capture pitch.
+    Wants out → voicemail.
+    Everything else → Claude asks a real follow-up question. Yield, collect, ask for more.
     """
     cfg = load_config()
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
-    speech = SpeechResult.strip().lower()
+    speech = SpeechResult.strip()
+    speech_lower = speech.lower()
 
-    yes_signals = ["yes", "yeah", "sure", "absolutely", "interested", "tell me", "what is", "sounds good", "why not"]
-    is_yes = any(s in speech for s in yes_signals)
+    yes_signals = ["yes", "yeah", "sure", "absolutely", "interested", "tell me", "sounds good", "why not", "what is it"]
+    exit_signals = ["leave a message", "voicemail", "call me back", "have him call", "goodbye", "bye", "no thank you", "not interested", "remove"]
 
-    log.info(f"Engage response  SID={CallSid}  from={From}  yes={is_yes}  speech='{speech}'")
-    await broadcast_dashboard({"event": "lead_response", "sid": CallSid, "from": From, "interested": is_yes})
+    is_yes = any(s in speech_lower for s in yes_signals)
+    wants_out = any(s in speech_lower for s in exit_signals)
+
+    # Append to transcript for context
+    call = active_calls.get(CallSid, {})
+    transcript_so_far = call.get("transcript", [])
+    if speech:
+        transcript_so_far.append(speech)
+
+    log.info(f"Engage response  SID={CallSid}  from={From}  yes={is_yes}  exit={wants_out}  speech='{speech}'")
+    await broadcast_dashboard({"event": "engage_response", "sid": CallSid, "from": From, "interested": is_yes, "speech": speech})
+
+    if wants_out:
+        return await _take_voicemail(request, CallSid, cfg)
 
     if is_yes:
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play_filler("oh-yeah(affirmative).wav", base_url)}
   {_play("PhoneBuddy answers your calls in your own voice, screens out the noise, captures every lead, and lets you call back on your terms. May I get your name and the best way to follow up with you?", base_url)}
-  <Gather input="speech" action="{base_url}/call/classify"
+  <Gather input="speech" action="{base_url}/call/engage-response"
           speechTimeout="auto" timeout="10" language="en-US">
     <Pause length="1"/>
   </Gather>
   <Redirect>{base_url}/call/voicemail</Redirect>
 </Response>"""
-    else:
-        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+        return Response(content=twiml, media_type="application/xml")
+
+    # Everything else — ask a real follow-up based on what they actually said
+    followup = await _generate_followup(speech, transcript_so_far, cfg)
+    log.info(f"Follow-up generated  SID={CallSid}  question='{followup}'")
+
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play("No problem at all. May I ask your name and the purpose of your call today? I want to make sure Nick gets your message.", base_url)}
-  <Gather input="speech" action="{base_url}/call/classify"
+  {_play(followup, base_url)}
+  <Gather input="speech" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="10" language="en-US">
+    <Pause length="1"/>
+  </Gather>
+  {_play("I'm still here. Take your time.", base_url)}
+  <Gather input="speech" action="{base_url}/call/engage-response"
           speechTimeout="auto" timeout="8" language="en-US">
     <Pause length="1"/>
   </Gather>
   <Redirect>{base_url}/call/voicemail</Redirect>
 </Response>"""
-
     return Response(content=twiml, media_type="application/xml")
 
 
