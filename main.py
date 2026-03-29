@@ -274,22 +274,21 @@ async def inbound_call(
         "status": "answering — silence trap active",
     })
 
-    # ── SILENCE TRAP ──
-    # Answer with dead silence. Autodialers wait for voice activity.
-    # Real humans say "Hello?" — we catch that in /call/classify.
-    # A <Gather> with a long pause + speech detection handles both.
+    # ── SPAM TRAP + NATURAL PICKUP ──
+    # "This is Nick" defeats autodialers — they wait for "Hello" to trigger transfer.
+    # Real humans respond naturally. 3s silence window before second prompt.
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play("Hello, I am Nicholas's personal assistant. This call may be recorded.", base_url)}
+  {_play_filler("this-is-nick.wav", base_url)}
   <Gather input="speech" action="{base_url}/call/classify"
-          speechTimeout="auto" timeout="4" language="en-US">
-    <Pause length="3"/>
+          speechTimeout="auto" timeout="3" language="en-US">
+    <Pause length="1"/>
   </Gather>
-  {_play("Hello, are you there? I don't recognize your number. Would you like to leave a message?", base_url)}
+  {_play("Hello. I don't recognize your number. I'm Nick's personal assistant. How can I help you?", base_url)}
   <Gather input="speech" action="{base_url}/call/classify"
-          speechTimeout="auto" timeout="4" language="en-US">
-    <Pause length="3"/>
+          speechTimeout="auto" timeout="3" language="en-US">
+    <Pause length="1"/>
   </Gather>
   <Redirect>{base_url}/call/voicemail</Redirect>
 </Response>"""
