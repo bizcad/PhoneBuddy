@@ -265,6 +265,7 @@ async def inbound_call(
         "transcript": [],
         "classification": None,
         "suspicion_score": 0.0,
+        "pitched": False,  # True after first PB pitch — prevents re-pitching
     }
 
     await broadcast_dashboard({
@@ -519,9 +520,9 @@ async def _take_voicemail(request: Request, call_sid: str, cfg: dict) -> Respons
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play("I'm sorry, the person you are trying to reach is unavailable. Please leave a message after the tone.", base_url)}
-  <Record maxLength="60" transcribe="true"
-          action="{base_url}/call/recording-complete"
-          transcribeCallback="{base_url}/call/recording-complete"/>
+  <Record maxLength="120" playBeep="true" timeout="10" transcribe="true"
+          transcribeCallback="{base_url}/call/recording-complete"
+          action="{base_url}/call/recording-complete"/>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
 
@@ -634,9 +635,9 @@ async def engage_response(
 ):
     """
     Caller responded to anything PB said.
-    Yes → lead capture pitch.
+    Yes (first time only) → lead capture pitch.
     Wants out → voicemail.
-    Everything else → Claude asks a real follow-up question. Yield, collect, ask for more.
+    Everything else → immediate filler + redirect to /call/engage-followup where Haiku thinks.
     """
     cfg = load_config()
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
@@ -649,19 +650,21 @@ async def engage_response(
     is_yes = any(s in speech_lower for s in yes_signals)
     wants_out = any(s in speech_lower for s in exit_signals)
 
-    # Append to transcript for context
     call = active_calls.get(CallSid, {})
     transcript_so_far = call.get("transcript", [])
+    already_pitched = call.get("pitched", False)
     if speech:
         transcript_so_far.append(speech)
 
-    log.info(f"Engage response  SID={CallSid}  from={From}  yes={is_yes}  exit={wants_out}  speech='{speech}'")
+    log.info(f"Engage response  SID={CallSid}  from={From}  yes={is_yes}  exit={wants_out}  pitched={already_pitched}  speech='{speech}'")
     await broadcast_dashboard({"event": "engage_response", "sid": CallSid, "from": From, "interested": is_yes, "speech": speech})
 
     if wants_out:
         return await _take_voicemail(request, CallSid, cfg)
 
-    if is_yes:
+    if is_yes and not already_pitched:
+        if CallSid in active_calls:
+            active_calls[CallSid]["pitched"] = True
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play_filler("oh-yeah(affirmative).wav", base_url)}
@@ -674,9 +677,36 @@ async def engage_response(
 </Response>"""
         return Response(content=twiml, media_type="application/xml")
 
-    # Everything else — ask a real follow-up based on what they actually said
+    # Return filler immediately — Haiku generates the real follow-up in engage-followup.
+    # Caller hears something within ~50ms instead of waiting 1-2s for Haiku.
+    encoded_speech = urllib.parse.quote(speech, safe="")
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play_filler("hmmm(pondering).wav", base_url)}
+  <Redirect method="POST">{base_url}/call/engage-followup?speech={encoded_speech}&amp;sid={CallSid}</Redirect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/call/engage-followup")
+async def engage_followup(
+    request: Request,
+    speech: str = "",
+    sid: str = "",
+    CallSid: str = Form(default=""),
+):
+    """
+    Called after the filler plays. Haiku generates the follow-up question here.
+    By the time Twilio hits this endpoint the filler has already played — latency is hidden.
+    """
+    cfg = load_config()
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    call_sid = sid or CallSid
+    call = active_calls.get(call_sid, {})
+    transcript_so_far = call.get("transcript", [])
+
     followup = await _generate_followup(speech, transcript_so_far, cfg)
-    log.info(f"Follow-up generated  SID={CallSid}  question='{followup}'")
+    log.info(f"Follow-up generated  SID={call_sid}  question='{followup}'")
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -685,7 +715,7 @@ async def engage_response(
           speechTimeout="auto" timeout="10" language="en-US">
     <Pause length="1"/>
   </Gather>
-  {_play("I'm still here. Take your time.", base_url)}
+  {_play_filler("im-listening.wav", base_url)}
   <Gather input="speech" action="{base_url}/call/engage-response"
           speechTimeout="auto" timeout="8" language="en-US">
     <Pause length="1"/>
