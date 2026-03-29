@@ -362,13 +362,12 @@ async def classify_call(
         f"  prior_suspicion={suspicion:.2f}  repeat_bad={context['repeat_bad_actor']}"
     )
 
-    # Fast-path: known repeat bad actor — skip Claude, block immediately.
+    # Fast-path: known repeat bad actor — engage deeper, they have the best scripts.
     if context["repeat_bad_actor"]:
-        log.info(f"R/FastBlock  SID={CallSid}  reason=repeat_bad_actor")
-        _evolve_context(CallSid, caller_number, "scam", "fast_blocked", cfg)
-        return await _decline_solicitation(request, CallSid, cfg)
+        log.info(f"R/RepeatBadActor  SID={CallSid}  — engaging anyway, collect the pattern")
 
-    # Safe word check — owner calling in (no history lookup needed)
+    # Safe word check — owner calling in. Safeword is the ONLY gate, not caller ID.
+    # Nick can call from his own number to test the engagement flow without safeword.
     safe_word = cfg["user"]["safe_word"].lower()
     safe_word_alt = cfg["user"].get("safe_word_alt", "").lower()
     if safe_word in transcript_text.lower() or safe_word_alt in transcript_text.lower():
@@ -377,10 +376,9 @@ async def classify_call(
             return await _admin_mode_response(request, CallSid, transcript_text, cfg)
 
     # Known contact from whitelist — forward immediately (no Claude needed)
+    # "self" tag is intentionally excluded here — owner must use safeword, not just caller ID.
     contact = context["contact"] or _match_contact(caller_number, transcript_text, cfg)
-    if contact:
-        if "self" in contact.get("tags", []):
-            return await _admin_mode_response(request, CallSid, transcript_text, cfg)
+    if contact and "self" not in contact.get("tags", []):
         _evolve_context(CallSid, caller_number, "contact", "forwarded", cfg)
         return await _forward_to_cell(request, CallSid, contact, cfg)
 
