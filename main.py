@@ -50,6 +50,7 @@ log = logging.getLogger("phonebuddy")
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="PhoneBuddy", version="0.1.0")
+app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -105,6 +106,14 @@ def _play(text: str, base_url: str, role: str = "receptionist") -> str:
     """
     encoded = urllib.parse.quote(text, safe="")
     return f'<Play>{base_url}/tts?text={encoded}&amp;role={role}</Play>'
+
+
+def _play_filler(filename: str, base_url: str) -> str:
+    """Return a TwiML <Play> element for a pre-recorded filler WAV.
+    Faster than TTS — no ElevenLabs round-trip. Sounds like Nick.
+    Files live in static/audio/fillers/.
+    """
+    return f'<Play>{base_url}/static/audio/fillers/{filename}</Play>'
 
 
 @app.get("/tts")
@@ -413,7 +422,7 @@ async def _forward_to_cell(request: Request, call_sid: str, contact: dict, cfg: 
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play("Please hold one moment.", base_url)}
+  {_play_filler("one-moment(flat).wav", base_url)}
   <Dial callerId="{cfg['user'].get('landline') or cfg['user']['cell']}">
     <Number url="{base_url}/call/whisper?name={name}">{cell}</Number>
   </Dial>
@@ -437,7 +446,8 @@ async def _hold_and_brief(request: Request, call_sid: str, transcript: str,
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play("Thank you. Please hold one moment while I connect you.", base_url)}
+  {_play_filler("thank-you-for-your-patience.wav", base_url)}
+  {_play_filler("one-moment(sing-song).wav", base_url)}
   <Enqueue waitUrl="{base_url}/call/hold-music">{call_sid}_queue</Enqueue>
 </Response>"""
     # TODO Phase 2: trigger outbound call to cell with whisper briefing
@@ -486,7 +496,8 @@ async def _ask_purpose(request: Request, call_sid: str, cfg: dict) -> Response:
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play("Hello, thank you for calling. May I ask who is calling and the nature of your call?", base_url)}
+  {_play_filler("hello(answering).wav", base_url)}
+  {_play("Thank you for calling. May I ask who is calling and the nature of your call?", base_url)}
   <Gather input="speech" action="{base_url}/call/classify"
           speechTimeout="auto" timeout="10">
   </Gather>
@@ -606,6 +617,7 @@ async def _admin_mode_response(request: Request, call_sid: str,
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+  {_play_filler("hi-this-is-nick.wav", base_url)}
   {_play(summary, base_url)}
   <Gather input="speech" action="{base_url}/call/admin-query" speechTimeout="5" timeout="10">
     <Pause length="1"/>
