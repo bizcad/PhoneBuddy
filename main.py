@@ -1020,7 +1020,7 @@ async def callback_request(request: Request):
     cb_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
     (cb_dir / f"{ts}.json").write_text(json.dumps(record, indent=2))
-    log.info(f"Callback request: {number} from segment={segment}")
+    log.info(f"CALLBACK_REQUEST number={number} segment={segment}")
     return {"status": "ok"}
 
 
