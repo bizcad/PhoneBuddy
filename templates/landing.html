@@ -63,7 +63,7 @@
 
     <!-- Hook -->
     <h1 class="text-5xl md:text-7xl font-extrabold text-[#201b12] tracking-tight leading-[1.05]">
-      {{ headline }}<br/>
+      <span class="whitespace-nowrap">{{ headline }}</span><br/>
       <span class="aureate-text">{{ subhead }}</span>
     </h1>
 
@@ -89,9 +89,12 @@
     </div>
 
     <!-- Trust signal -->
-    <p class="text-base md:text-lg text-[#755a27] font-semibold max-w-xl mx-auto leading-relaxed">
-      {{ trust_signal }}
-    </p>
+    <ul class="inline-flex flex-col items-start gap-2 text-base md:text-lg text-[#755a27] font-semibold mx-auto">
+      <li class="flex items-center gap-2"><span class="material-symbols-outlined text-base" style="font-variation-settings:'FILL' 1;">shield</span> Screens scam calls</li>
+      <li class="flex items-center gap-2"><span class="material-symbols-outlined text-base" style="font-variation-settings:'FILL' 1;">forward</span> Forwards the real ones</li>
+      <li class="flex items-center gap-2"><span class="material-symbols-outlined text-base" style="font-variation-settings:'FILL' 1;">contact_phone</span> Remembers who called</li>
+      <li class="flex items-center gap-2"><span class="material-symbols-outlined text-base" style="font-variation-settings:'FILL' 1;">headset_off</span> Never puts you on hold</li>
+    </ul>
   </div>
 </section>
 
