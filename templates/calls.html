@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% set active_nav = "calls" %}
+{% set page_title = "Call History" %}
+
+{% block content %}
+<main class="flex-1 flex flex-col bg-surface-container-low min-h-screen">
+  <header class="w-full sticky top-0 z-50 bg-[#fff8f3] shadow-sm flex justify-between items-center px-6 py-3">
+    <h2 class="text-xl font-bold text-[#7c5800] tracking-tight">Call History</h2>
+    <div class="flex items-center gap-6">
+      <div class="hidden sm:flex relative">
+        <input class="bg-surface-container-high border-none rounded-lg pl-10 pr-4 py-2 text-sm focus:ring-2 focus:ring-primary w-64 transition-all" placeholder="Search callers..." type="text"/>
+        <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline">search</span>
+      </div>
+      <button class="p-2 rounded-full hover:bg-stone-100 transition-colors">
+        <span class="material-symbols-outlined text-primary">notifications</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="flex-grow overflow-y-auto p-6 lg:p-12 space-y-8 bg-surface-container-low">
+    <!-- Summary Bento -->
+    <section class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div class="bg-surface-container-lowest rounded-xl p-6 ghost-border flex flex-col justify-between">
+        <p class="text-xs font-bold uppercase tracking-[0.05em] text-secondary">Total Volume Today</p>
+        <h3 class="text-[3.5rem] font-extrabold leading-tight text-on-surface" id="stat-total">—</h3>
+        <div class="flex items-center gap-2 mt-4 text-tertiary font-semibold text-sm">
+          <span class="material-symbols-outlined text-sm">trending_up</span>
+          <span>Calls screened</span>
+        </div>
+      </div>
+      <div class="bg-surface-container-lowest rounded-xl p-6 ghost-border">
+        <p class="text-xs font-bold uppercase tracking-[0.05em] text-secondary">Missed Calls</p>
+        <div class="flex items-end justify-between mt-2">
+          <h3 class="text-[3.5rem] font-extrabold leading-tight text-error" id="stat-missed">—</h3>
+          <span class="material-symbols-outlined text-error-container text-4xl mb-4">call_missed</span>
+        </div>
+        <p class="text-xs text-outline mt-2">Requires callback</p>
+      </div>
+      <div class="bg-surface-container-lowest rounded-xl p-6 ghost-border">
+        <p class="text-xs font-bold uppercase tracking-[0.05em] text-secondary">Blocked Today</p>
+        <h3 class="text-[3.5rem] font-extrabold leading-tight text-on-surface" id="stat-blocked">—</h3>
+        <div class="flex items-center gap-2 mt-4 text-outline font-medium text-sm">
+          <span class="material-symbols-outlined text-sm">block</span>
+          <span>Scam / spam</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Table Controls -->
+    <section class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div class="flex p-1 bg-surface-container rounded-xl self-start">
+        <button class="px-6 py-2 text-sm font-semibold rounded-lg bg-surface-container-lowest text-primary shadow-sm">All Calls</button>
+        <button class="px-6 py-2 text-sm font-medium text-stone-600 hover:text-primary transition-colors">Missed</button>
+        <button class="px-6 py-2 text-sm font-medium text-stone-600 hover:text-primary transition-colors">Voicemail</button>
+        <button class="px-6 py-2 text-sm font-medium text-stone-600 hover:text-primary transition-colors">Blocked</button>
+      </div>
+      <button class="flex items-center gap-2 px-6 py-2.5 aureate-glow text-white rounded-full font-semibold text-sm shadow-md active:scale-95 transition-all">
+        <span class="material-symbols-outlined text-lg">download</span>
+        Export CSV
+      </button>
+    </section>
+
+    <!-- Calls Table -->
+    <section class="bg-surface-container-lowest rounded-2xl shadow-sm overflow-hidden">
+      <table class="w-full text-left border-collapse">
+        <thead>
+          <tr class="bg-surface-container-high/50">
+            <th class="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-outline">Caller</th>
+            <th class="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-outline">Status</th>
+            <th class="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-outline">Date &amp; Time</th>
+            <th class="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-outline">Duration</th>
+            <th class="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-outline text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="calls-table-body" class="divide-y-0">
+          <tr>
+            <td colspan="5" class="px-6 py-12 text-center text-secondary">
+              <span class="material-symbols-outlined text-4xl block mb-2 opacity-30">call</span>
+              Loading calls...
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <footer class="px-6 py-4 bg-surface-container/30 flex items-center justify-between">
+        <p class="text-xs text-outline font-medium" id="calls-pagination-label">—</p>
+        <div class="flex items-center gap-1">
+          <button class="p-2 text-outline hover:text-primary disabled:opacity-30" disabled>
+            <span class="material-symbols-outlined">chevron_left</span>
+          </button>
+          <button class="w-8 h-8 rounded-lg bg-primary text-white text-xs font-bold">1</button>
+          <button class="p-2 text-outline hover:text-primary">
+            <span class="material-symbols-outlined">chevron_right</span>
+          </button>
+        </div>
+      </footer>
+    </section>
+  </div>
+</main>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+async function loadCalls() {
+  try {
+    const r = await fetch('/dashboard/calls');
+    const data = await r.json();
+    const calls = data.calls || [];
+    const tbody = document.getElementById('calls-table-body');
+    document.getElementById('stat-total').textContent = calls.length;
+    const missed = calls.filter(c => !c.duration_sec || c.duration_sec === 0).length;
+    const blocked = calls.filter(c => c.classification?.includes('scam')).length;
+    document.getElementById('stat-missed').textContent = missed;
+    document.getElementById('stat-blocked').textContent = blocked;
+    document.getElementById('calls-pagination-label').textContent = `Showing ${calls.length} entries`;
+
+    if (!calls.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-12 text-center text-secondary">No calls recorded yet.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = calls.map(c => {
+      const cls = c.classification || 'unknown';
+      const isScam = cls.includes('scam');
+      const isMissed = !c.duration_sec;
+      const badgeCls = isScam ? 'bg-error-container text-error' :
+                       isMissed ? 'bg-error-container text-error' :
+                       'bg-tertiary/10 text-tertiary';
+      const badgeIcon = isScam ? 'block' : isMissed ? 'call_missed' : 'check_circle';
+      const badgeLabel = isScam ? 'Blocked' : isMissed ? 'Missed' : 'Completed';
+      const ts = c.timestamp ? new Date(c.timestamp) : null;
+      const dateStr = ts ? ts.toLocaleDateString() : '—';
+      const timeStr = ts ? ts.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+      const dur = c.duration_sec ? `${Math.floor(c.duration_sec/60)}m ${c.duration_sec%60}s` : '--';
+      return `
+        <tr class="group hover:bg-surface-container-low transition-colors ${isScam ? 'bg-error-container/5' : ''}">
+          <td class="px-6 py-5">
+            <div class="flex items-center gap-4">
+              <div class="w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center text-primary font-bold">
+                ${(c.caller || c.from || '?').slice(0,2).toUpperCase()}
+              </div>
+              <div>
+                <p class="font-semibold text-on-surface">${c.caller || c.from || 'Unknown'}</p>
+                <p class="text-xs text-outline">${c.from || ''}</p>
+              </div>
+            </div>
+          </td>
+          <td class="px-6 py-5">
+            <div class="flex items-center gap-2 px-3 py-1 rounded-full ${badgeCls} w-fit">
+              <span class="material-symbols-outlined text-base">${badgeIcon}</span>
+              <span class="text-xs font-bold uppercase tracking-wider">${badgeLabel}</span>
+            </div>
+          </td>
+          <td class="px-6 py-5">
+            <p class="text-sm font-medium text-on-surface">${dateStr}</p>
+            <p class="text-xs text-outline">${timeStr}</p>
+          </td>
+          <td class="px-6 py-5"><p class="text-sm font-semibold">${dur}</p></td>
+          <td class="px-6 py-5 text-right">
+            <div class="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button class="p-2 hover:bg-white rounded-lg text-primary transition-colors">
+                <span class="material-symbols-outlined">call</span>
+              </button>
+              <button class="p-2 hover:bg-white rounded-lg text-outline transition-colors">
+                <span class="material-symbols-outlined">more_vert</span>
+              </button>
+            </div>
+          </td>
+        </tr>`;
+    }).join('');
+  } catch(e) { console.error('Failed to load calls', e); }
+}
+loadCalls();
+</script>
+{% endblock %}

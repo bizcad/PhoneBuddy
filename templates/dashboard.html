@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% set active_nav = "dashboard" %}
+{% set page_title = "Dashboard" %}
+
+{% block content %}
+<main class="flex-1 min-h-screen p-6 md:p-12 overflow-x-hidden">
+  <!-- Top Header -->
+  <header class="flex justify-between items-center mb-12">
+    <div>
+      <h2 class="text-3xl font-extrabold tracking-tight text-primary">Good Morning, {{ user_name or "Nick" }}</h2>
+      <p class="text-secondary font-medium mt-1" id="buddy-status">Connecting to PhoneBuddy...</p>
+    </div>
+    <div class="flex items-center gap-4">
+      <div class="bg-surface-container-high px-4 py-2 rounded-full flex items-center gap-2">
+        <span class="material-symbols-outlined text-primary text-sm">search</span>
+        <input class="bg-transparent border-none focus:ring-0 text-sm w-48 font-medium" placeholder="Search callers..." type="text"/>
+      </div>
+      <button class="p-2 rounded-full hover:bg-surface-container-highest transition-colors">
+        <span class="material-symbols-outlined text-primary">notifications</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="grid grid-cols-12 gap-8">
+    <!-- Left & Center -->
+    <div class="col-span-12 lg:col-span-8 space-y-12">
+
+      <!-- Quick Stats -->
+      <div class="grid grid-cols-2 gap-6">
+        <div class="bg-surface-container-lowest p-8 rounded-xl flex flex-col items-center text-center">
+          <span class="text-[0.6875rem] font-bold uppercase tracking-[0.1em] text-secondary mb-2">Queue Size</span>
+          <span class="text-5xl md:text-6xl font-extrabold text-primary" id="stat-queue">—</span>
+          <span class="text-sm font-medium text-tertiary mt-2">Calls waiting</span>
+        </div>
+        <div class="bg-surface-container-lowest p-8 rounded-xl flex flex-col items-center text-center">
+          <span class="text-[0.6875rem] font-bold uppercase tracking-[0.1em] text-secondary mb-2">Today's Calls</span>
+          <span class="text-5xl md:text-6xl font-extrabold text-primary" id="stat-today">—</span>
+          <span class="text-sm font-medium text-secondary mt-2">Screened</span>
+        </div>
+      </div>
+
+      <!-- Active Call (hidden when idle) -->
+      <section id="active-call-section" class="hidden">
+        <div class="flex items-center justify-between mb-6">
+          <h3 class="text-xl font-bold text-on-surface">Active Call</h3>
+          <div class="flex items-center gap-2 px-3 py-1 bg-tertiary/10 rounded-full">
+            <span class="h-2 w-2 rounded-full bg-tertiary call-pulse"></span>
+            <span class="text-xs font-bold text-tertiary uppercase">Live Now</span>
+          </div>
+        </div>
+        <div class="bg-surface-container-lowest p-1 rounded-3xl shadow-xl shadow-on-surface/5">
+          <div class="bg-gradient-to-br from-white to-surface-container-low p-8 rounded-[1.4rem] flex flex-col md:flex-row items-center gap-8">
+            <div class="flex-1 text-center md:text-left">
+              <h4 class="text-2xl font-bold text-on-surface" id="active-caller">—</h4>
+              <p class="text-secondary font-medium" id="active-number">Inbound Call</p>
+              <div class="mt-4 inline-flex items-center gap-4 bg-surface-container-high px-6 py-2 rounded-full">
+                <span class="text-2xl font-black text-primary font-mono tracking-tighter" id="active-timer">0:00</span>
+                <div class="h-4 w-[1px] bg-outline-variant"></div>
+                <span class="text-xs font-bold text-secondary uppercase">Timer</span>
+              </div>
+            </div>
+            <div class="flex gap-4">
+              <button class="h-16 w-16 rounded-full bg-surface-container-highest text-primary hover:bg-primary hover:text-white transition-all duration-300 flex items-center justify-center">
+                <span class="material-symbols-outlined">mic_off</span>
+              </button>
+              <button class="h-16 w-16 rounded-full bg-error text-white hover:bg-red-700 transition-all duration-300 flex items-center justify-center shadow-lg shadow-error/20 active:scale-95">
+                <span class="material-symbols-outlined">call_end</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Recent Calls -->
+      <section>
+        <div class="flex items-center justify-between mb-6">
+          <h3 class="text-xl font-bold text-on-surface">Recent Callers</h3>
+          <a href="/calls" class="text-sm font-bold text-primary hover:underline">View All</a>
+        </div>
+        <div id="recent-callers" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="col-span-2 text-center py-12 text-secondary">
+            <span class="material-symbols-outlined text-4xl block mb-2 opacity-30">call</span>
+            PhoneBuddy is listening. Your first screened call will appear here.
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Right Column: Activity Feed -->
+    <div class="col-span-12 lg:col-span-4 space-y-8">
+      <section class="bg-surface-container-low rounded-3xl p-8 min-h-[500px]">
+        <h3 class="text-xl font-bold text-on-surface mb-8">Recent Activity</h3>
+        <div class="space-y-8 relative" id="activity-feed">
+          <div class="absolute left-3 top-2 bottom-2 w-px bg-outline-variant"></div>
+          <div class="relative pl-10 text-secondary text-sm">
+            <em>No activity yet.</em>
+          </div>
+        </div>
+      </section>
+
+      <!-- Quick Actions -->
+      <section class="grid grid-cols-2 gap-4">
+        <button class="bg-surface-container-highest p-6 rounded-2xl flex flex-col items-center gap-3 hover:bg-primary-container transition-all group">
+          <span class="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">filter_list</span>
+          <span class="text-xs font-bold text-on-surface">Screen Call</span>
+        </button>
+        <button class="bg-surface-container-highest p-6 rounded-2xl flex flex-col items-center gap-3 hover:bg-error/10 transition-all group">
+          <span class="material-symbols-outlined text-error group-hover:scale-110 transition-transform">block</span>
+          <span class="text-xs font-bold text-on-surface">Block Number</span>
+        </button>
+        <a href="/contacts" class="bg-surface-container-highest p-6 rounded-2xl flex flex-col items-center gap-3 hover:bg-primary-container transition-all group">
+          <span class="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">person_add</span>
+          <span class="text-xs font-bold text-on-surface">Add Contact</span>
+        </a>
+        <a href="/voicemail" class="bg-surface-container-highest p-6 rounded-2xl flex flex-col items-center gap-3 hover:bg-primary-container transition-all group">
+          <span class="material-symbols-outlined text-primary group-hover:scale-110 transition-transform">mail</span>
+          <span class="text-xs font-bold text-on-surface">View Voicemail</span>
+        </a>
+      </section>
+    </div>
+  </div>
+</main>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// ── WebSocket live feed ──────────────────────────────────────────────────────
+const ws = new WebSocket(`ws://${location.host}/ws/dashboard`);
+
+ws.onopen = () => {
+  document.getElementById('buddy-status').textContent = 'Buddy Active — Listening ✓';
+  document.getElementById('buddy-status').className = 'font-medium mt-1 text-tertiary';
+};
+ws.onclose = () => {
+  document.getElementById('buddy-status').textContent = 'Disconnected — reconnecting...';
+  document.getElementById('buddy-status').className = 'font-medium mt-1 text-error';
+};
+
+ws.onmessage = (msg) => {
+  const e = JSON.parse(msg.data);
+  if (e.event === 'recording_saved') loadRecentCalls();
+
+  // Show active call section on inbound
+  if (e.event === 'call_start' || e.event === 'inbound') {
+    document.getElementById('active-call-section').classList.remove('hidden');
+    document.getElementById('active-caller').textContent = e.contact || e.from || 'Unknown Caller';
+    document.getElementById('active-number').textContent = `Inbound Call • ${e.from || ''}`;
+  }
+  if (e.event === 'call_end' || e.event === 'recording_saved') {
+    document.getElementById('active-call-section').classList.add('hidden');
+  }
+
+  // Activity feed entry
+  const feed = document.getElementById('activity-feed');
+  const dot = e.classification?.includes('scam') ? 'bg-error' :
+               e.event === 'recording_saved' ? 'bg-tertiary' : 'bg-primary';
+  const item = document.createElement('div');
+  item.className = 'relative pl-10';
+  item.innerHTML = `
+    <div class="absolute left-1.5 top-1.5 h-3 w-3 rounded-full ${dot} border-2 border-white"></div>
+    <p class="text-xs font-bold text-secondary uppercase tracking-widest mb-1">${new Date().toLocaleTimeString()}</p>
+    <h6 class="font-bold text-sm">${e.event?.replace(/_/g,' ') || 'Event'}</h6>
+    <p class="text-xs text-secondary mt-1">${e.from || ''} ${e.classification ? '— ' + e.classification : ''}</p>
+  `;
+  // Remove "no activity" placeholder on first real event
+  const placeholder = feed.querySelector('em');
+  if (placeholder) placeholder.closest('.relative').remove();
+  feed.insertBefore(item, feed.children[1] || null);
+};
+
+// ── Recent calls panel ───────────────────────────────────────────────────────
+async function loadRecentCalls() {
+  try {
+    const r = await fetch('/dashboard/calls');
+    const data = await r.json();
+    renderRecentCalls(data.calls || []);
+  } catch(e) {
+    console.error('Failed to load calls', e);
+  }
+}
+
+function renderRecentCalls(calls) {
+  const el = document.getElementById('recent-callers');
+  if (!calls.length) return;
+  el.innerHTML = calls.slice(0, 4).map(c => {
+    const cls = c.classification || 'unknown';
+    const clsBadge = cls.includes('scam') ? 'bg-error/10 text-error' :
+                     cls === 'medical' ? 'bg-blue-100 text-blue-700' :
+                     'bg-primary/10 text-primary';
+    const ts = c.timestamp ? new Date(c.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+    return `
+      <div class="group bg-surface-container-lowest p-6 rounded-2xl hover:bg-surface-container-low transition-all duration-300 flex items-center gap-4">
+        <div class="h-12 w-12 rounded-full bg-surface-container-highest flex items-center justify-center font-bold text-primary">
+          ${(c.caller || '?').slice(0,2).toUpperCase()}
+        </div>
+        <div class="flex-1">
+          <h5 class="font-bold text-on-surface">${c.caller || c.from || 'Unknown'}</h5>
+          <p class="text-xs text-secondary">${ts}</p>
+        </div>
+        <span class="${clsBadge} text-[0.625rem] font-black px-2 py-1 rounded uppercase tracking-wider">${cls}</span>
+      </div>`;
+  }).join('');
+}
+
+loadRecentCalls();
+</script>
+{% endblock %}

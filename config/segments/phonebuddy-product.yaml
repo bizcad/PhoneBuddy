@@ -1,0 +1,41 @@
+# Segment: PhoneBuddy Product Landing Page
+# The general product page — shown at phone-buddy.app
+# Target: anyone who got the number or searched for it
+# Goal: one action — call the number or leave their number
+
+slug: "phonebuddy"
+segment_name: "PhoneBuddy Product"
+
+headline: "Do you answer every call?"
+subhead: "We do."
+
+phone_display: "+1 (949) 304-6155"
+
+hero_cta_primary: "Call now — we'll answer"
+hero_cta_secondary: "Try it free"
+
+trust_signal: "Screens scam calls. Forwards the real ones. Remembers who called. Never puts you on hold."
+
+use_cases:
+  - title: "Block Scams Before They Reach You"
+    icon: "shield"
+    body: "PhoneBuddy screens every inbound call in real time. Scammers, robocalls, and spam never make it through. You only hear from people worth hearing from."
+  - title: "Never Miss an Important Call Again"
+    icon: "notifications_active"
+    body: "Every call is answered, classified, and logged — even when you can't pick up. You review on your schedule. Nothing falls through the cracks."
+  - title: "Skip the Hold Music Forever"
+    icon: "headset_off"
+    body: "Your callers never sit in silence wondering if anyone is there. PhoneBuddy engages them immediately, gathers what they need, and gets back to them — or gets them to you."
+
+brand_voice: >
+  They all say your call is important to them. They are lying. Your call is a nuisance to them.
+  Your call really is important to me because you can help me improve. I may not be able to do
+  exactly what you want right now, and I can't if you don't tell me. Give me your number and
+  I'll call you when I can do what you want.
+
+footer_cta_headline: "Give us your number. We'll call you back."
+footer_cta_placeholder: "Your number"
+footer_cta_button: "Call me"
+
+meta_title: "PhoneBuddy — Do you answer every call?"
+meta_description: "PhoneBuddy screens scam calls, forwards the real ones, and never puts your callers on hold. Call +1 (949) 304-6155 to hear it live."

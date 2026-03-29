@@ -1,0 +1,41 @@
+# Segment: Nick's Personal Outreach Funnel
+# Nick gives out his PhoneBuddy number to anyone who will listen to his elevator pitch.
+# The AI qualifies and categorizes callers.
+# This page is shown when someone Googles the number or asks for more info.
+
+slug: "nick"
+segment_name: "Nick's Personal Outreach"
+
+headline: "You got Nick's number."
+subhead: "His AI answers first."
+
+phone_display: "+1 (949) 304-6155"
+
+hero_cta_primary: "Call now — we'll answer"
+hero_cta_secondary: "Try it free"
+
+trust_signal: "Every call is answered, classified, and logged. Nick reviews them on his schedule."
+
+use_cases:
+  - title: "The AI Answers"
+    icon: "smart_toy"
+    body: "Callers describe their purpose. PhoneBuddy classifies intent and decides — forward, voicemail, or engage. Nick only hears from people worth hearing from."
+  - title: "Your Info Is Captured"
+    icon: "contact_page"
+    body: "Name, number, and purpose are logged. Nick reviews every caller — even the ones who don't get through. Nothing falls through the cracks."
+  - title: "Nick Calls Back on His Terms"
+    icon: "schedule_send"
+    body: "Admin mode lets Nick manage his queue from any phone, anywhere. No app needed. He's in control without being on call 24/7."
+
+brand_voice: >
+  They all say your call is important to them. They are lying. Your call is a nuisance to them.
+  Your call really is important to me because you can help me improve. I may not be able to do
+  exactly what you want right now, and I can't if you don't tell me. Give me your number and
+  I'll call you when I can do what you want.
+
+footer_cta_headline: "Give us your number. We'll call you back."
+footer_cta_placeholder: "Your number"
+footer_cta_button: "Call me"
+
+meta_title: "Nick Stein's AI Phone Assistant | PhoneBuddy"
+meta_description: "You reached Nick Stein's AI phone assistant. PhoneBuddy screens every call. Tell it why you're calling and Nick will follow up."

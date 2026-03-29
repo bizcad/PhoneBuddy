@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% set active_nav = "voicemail" %}
+{% set page_title = "Voicemail" %}
+
+{% block extra_head %}
+<style>
+  .waveform-bar { transition: height 0.2s ease; }
+</style>
+{% endblock %}
+
+{% block content %}
+<main class="flex-1 flex flex-col bg-surface-container-low min-h-screen overflow-hidden">
+  <header class="flex justify-between items-center px-6 py-3 w-full bg-[#fff8f3] sticky top-0 z-50 shadow-sm">
+    <div class="relative">
+      <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-stone-400">search</span>
+      <input class="pl-10 pr-4 py-2 bg-stone-100 border-none rounded-full text-sm w-64 focus:ring-2 focus:ring-primary-container transition-all" placeholder="Search messages..." type="text"/>
+    </div>
+    <div class="flex items-center gap-3">
+      <button class="w-10 h-10 flex items-center justify-center rounded-full text-stone-600 hover:bg-stone-100 transition-colors">
+        <span class="material-symbols-outlined">notifications</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="flex flex-1 overflow-hidden p-6 gap-6">
+    <!-- Left: Message List -->
+    <div class="w-80 flex flex-col gap-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xl font-extrabold text-[#7c5800]">Voicemails</h2>
+        <span class="px-2 py-0.5 bg-tertiary-container text-on-tertiary-container rounded-full text-[10px] font-bold tracking-wider uppercase" id="vm-new-count">—</span>
+      </div>
+      <div class="flex-1 overflow-y-auto pr-2 space-y-3" id="voicemail-list">
+        <div class="text-center py-8 text-secondary text-sm">
+          <span class="material-symbols-outlined text-3xl block mb-2 opacity-30">voicemail</span>
+          Loading voicemails...
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Detail View -->
+    <div class="flex-1 flex flex-col gap-6 overflow-hidden" id="voicemail-detail">
+      <!-- Empty state -->
+      <div class="flex-1 flex flex-col items-center justify-center text-center text-secondary" id="vm-empty-state">
+        <span class="material-symbols-outlined text-5xl opacity-20 mb-4">voicemail</span>
+        <p class="font-medium">Select a voicemail to listen</p>
+      </div>
+
+      <!-- Detail panel (shown when a voicemail is selected) -->
+      <div class="hidden flex-1 flex-col gap-6" id="vm-detail-panel">
+        <!-- Caller identity & actions -->
+        <div class="bg-surface-container-lowest rounded-2xl p-6 shadow-sm flex items-center justify-between">
+          <div class="flex items-center gap-5">
+            <div class="w-14 h-14 rounded-2xl bg-surface-container-highest flex items-center justify-center font-bold text-primary text-xl" id="vm-caller-avatar">?</div>
+            <div>
+              <h2 class="text-2xl font-bold text-on-surface tracking-tight" id="vm-caller-name">—</h2>
+              <p class="text-stone-500 text-sm mt-1" id="vm-caller-number">—</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <button class="px-6 py-2.5 rounded-full border border-stone-200 text-[#7c5800] font-bold hover:bg-stone-50 transition-colors flex items-center gap-2">
+              <span class="material-symbols-outlined text-lg">call</span>
+              Call Back
+            </button>
+          </div>
+        </div>
+
+        <!-- Player & Transcript -->
+        <div class="flex-1 flex flex-col bg-surface-container-lowest rounded-2xl shadow-sm overflow-hidden">
+          <!-- Player -->
+          <div class="p-6 bg-surface-container-high/30 flex items-center gap-6 border-b border-stone-100">
+            <button class="w-14 h-14 rounded-full bg-primary text-white flex items-center justify-center hover:scale-105 transition-all">
+              <span class="material-symbols-outlined text-3xl" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
+            </button>
+            <div class="flex-1 flex items-end gap-1 h-12 pb-1">
+              <div class="waveform-bar w-1.5 bg-primary-container rounded-full h-4"></div>
+              <div class="waveform-bar w-1.5 bg-primary-container rounded-full h-8"></div>
+              <div class="waveform-bar w-1.5 bg-stone-200 rounded-full h-12"></div>
+              <div class="waveform-bar w-1.5 bg-stone-200 rounded-full h-6"></div>
+              <div class="waveform-bar w-1.5 bg-stone-200 rounded-full h-10"></div>
+              <div class="waveform-bar w-1.5 bg-stone-200 rounded-full h-7"></div>
+              <div class="waveform-bar w-1.5 bg-stone-200 rounded-full h-3"></div>
+              <div class="waveform-bar w-1.5 bg-stone-200 rounded-full h-9"></div>
+              <div class="waveform-bar w-1.5 bg-stone-200 rounded-full h-11"></div>
+              <div class="waveform-bar w-1.5 bg-stone-200 rounded-full h-5"></div>
+              <div class="waveform-bar w-1.5 bg-stone-200 rounded-full h-8"></div>
+              <div class="waveform-bar w-1.5 bg-stone-200 rounded-full h-12"></div>
+            </div>
+            <div class="text-xs font-mono font-bold text-primary" id="vm-duration">—</div>
+          </div>
+
+          <!-- Transcript -->
+          <div class="flex-1 p-8 overflow-y-auto bg-white/50">
+            <div class="flex items-center gap-2 mb-6">
+              <span class="material-symbols-outlined text-primary-container text-sm">verified_user</span>
+              <h3 class="text-xs font-bold uppercase tracking-widest text-stone-400">Automated Transcription</h3>
+            </div>
+            <p class="text-base leading-relaxed text-on-surface font-medium" id="vm-transcript">—</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+async function loadVoicemails() {
+  try {
+    const r = await fetch('/dashboard/calls');
+    const data = await r.json();
+    const calls = data.calls || [];
+    // Show calls that have a recording/transcript (duration > 0 as proxy)
+    const vms = calls.filter(c => c.duration_sec && c.duration_sec > 0);
+    const listEl = document.getElementById('voicemail-list');
+    const countEl = document.getElementById('vm-new-count');
+    countEl.textContent = `${vms.length} New`;
+
+    if (!vms.length) {
+      listEl.innerHTML = '<div class="text-center py-8 text-secondary text-sm"><span class="material-symbols-outlined text-3xl block mb-2 opacity-30">voicemail</span>No voicemails yet.</div>';
+      return;
+    }
+
+    listEl.innerHTML = vms.map((c, i) => {
+      const ts = c.timestamp ? new Date(c.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '—';
+      const dur = c.duration_sec ? `${Math.floor(c.duration_sec/60)}:${String(c.duration_sec%60).padStart(2,'0')}` : '';
+      return `
+        <div class="bg-surface-container-lowest p-4 rounded-xl hover:bg-stone-100 transition-all cursor-pointer" onclick="showDetail(${i})" data-idx="${i}">
+          <div class="flex justify-between items-start mb-2">
+            <span class="text-[10px] font-bold uppercase tracking-widest text-stone-400">${ts}</span>
+            ${dur ? `<span class="text-[10px] text-stone-400 font-mono">${dur}</span>` : ''}
+          </div>
+          <h3 class="font-bold text-on-surface">${c.caller || c.from || 'Unknown'}</h3>
+          <p class="text-xs text-stone-500 mt-1 truncate">${c.from || ''}</p>
+        </div>`;
+    }).join('');
+
+    window._vmData = vms;
+  } catch(e) { console.error('Failed to load voicemails', e); }
+}
+
+function showDetail(idx) {
+  const c = window._vmData[idx];
+  if (!c) return;
+  const initials = (c.caller || c.from || '?').slice(0,2).toUpperCase();
+  document.getElementById('vm-caller-avatar').textContent = initials;
+  document.getElementById('vm-caller-name').textContent = c.caller || c.from || 'Unknown';
+  document.getElementById('vm-caller-number').textContent = c.from || '—';
+  const dur = c.duration_sec ? `0:00 / ${Math.floor(c.duration_sec/60)}:${String(c.duration_sec%60).padStart(2,'0')}` : '—';
+  document.getElementById('vm-duration').textContent = dur;
+  document.getElementById('vm-transcript').textContent = c.transcript || 'Transcript not available.';
+  document.getElementById('vm-empty-state').classList.add('hidden');
+  document.getElementById('vm-detail-panel').classList.remove('hidden');
+  document.getElementById('vm-detail-panel').classList.add('flex');
+}
+
+loadVoicemails();
+</script>
+{% endblock %}

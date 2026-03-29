@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>{{ meta_title }}</title>
+<meta name="description" content="{{ meta_description }}"/>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          "primary": "#7c5800",
+          "primary-container": "#e6a817",
+          "surface": "#fff8f3",
+          "surface-low": "#fef2e3",
+          "surface-high": "#f2e6d7",
+          "surface-highest": "#ede1d2",
+          "on-surface": "#201b12",
+          "secondary": "#755a27",
+          "tertiary": "#006e23",
+          "tertiary-container": "#5bc966",
+          "error": "#ba1a1a",
+          "outline": "#827561",
+          "outline-variant": "#d4c4ad",
+        },
+        fontFamily: { sans: ["Manrope", "sans-serif"] },
+      }
+    }
+  }
+</script>
+<style>
+  .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+  .aureate { background: linear-gradient(135deg, #7c5800 0%, #e6a817 100%); }
+  .aureate-text { background: linear-gradient(135deg, #7c5800 0%, #e6a817 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .phone-pulse { animation: phonepulse 2.5s ease-in-out infinite; }
+  @keyframes phonepulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(230, 168, 23, 0.4); }
+    50%       { box-shadow: 0 0 0 20px rgba(230, 168, 23, 0); }
+  }
+</style>
+</head>
+<body class="bg-[#fff8f3] text-[#201b12] font-sans antialiased">
+
+<!-- ── Nav ──────────────────────────────────────────────────────────── -->
+<nav class="fixed top-0 left-0 right-0 z-50 bg-[#fff8f3]/90 backdrop-blur-sm border-b border-[#ede1d2]/50">
+  <div class="max-w-6xl mx-auto px-6 py-4 flex justify-between items-center">
+    <span class="text-lg font-extrabold text-primary tracking-tight">PhoneBuddy</span>
+    <a href="tel:+19493046155"
+       class="aureate text-white px-6 py-2.5 rounded-full font-bold text-sm shadow-md hover:scale-105 active:scale-95 transition-all flex items-center gap-2">
+      <span class="material-symbols-outlined text-base">call</span>
+      {{ phone_display }}
+    </a>
+  </div>
+</nav>
+
+<!-- ── Hero ─────────────────────────────────────────────────────────── -->
+<section class="min-h-screen flex flex-col items-center justify-center text-center px-6 pt-24 pb-16">
+  <div class="max-w-3xl mx-auto space-y-8">
+
+    <!-- Hook -->
+    <h1 class="text-5xl md:text-7xl font-extrabold text-[#201b12] tracking-tight leading-[1.05]">
+      {{ headline }}<br/>
+      <span class="aureate-text">{{ subhead }}</span>
+    </h1>
+
+    <!-- Phone number — unmissable -->
+    <a href="tel:+19493046155"
+       class="inline-flex items-center gap-4 aureate text-white px-10 py-5 rounded-2xl font-extrabold text-2xl md:text-3xl shadow-xl phone-pulse hover:scale-105 active:scale-95 transition-all tracking-tight">
+      <span class="material-symbols-outlined text-3xl" style="font-variation-settings: 'FILL' 1;">call</span>
+      {{ phone_display }}
+    </a>
+
+    <!-- Dual CTA -->
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+      <a href="tel:+19493046155"
+         class="aureate text-white px-8 py-4 rounded-full font-bold text-base shadow-lg hover:scale-105 active:scale-95 transition-all flex items-center gap-2">
+        <span class="material-symbols-outlined">call</span>
+        {{ hero_cta_primary }}
+      </a>
+      <a href="#callback"
+         class="bg-surface-high text-primary px-8 py-4 rounded-full font-bold text-base hover:bg-surface-highest transition-colors flex items-center gap-2">
+        <span class="material-symbols-outlined">star</span>
+        {{ hero_cta_secondary }}
+      </a>
+    </div>
+
+    <!-- Trust signal -->
+    <p class="text-base md:text-lg text-[#755a27] font-semibold max-w-xl mx-auto leading-relaxed">
+      {{ trust_signal }}
+    </p>
+  </div>
+</section>
+
+<!-- ── Use Cases ─────────────────────────────────────────────────────── -->
+<section class="py-24 px-6 bg-[#fef2e3]">
+  <div class="max-w-5xl mx-auto">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+      {% for uc in use_cases %}
+      <div class="bg-white rounded-3xl p-8 shadow-sm hover:shadow-md transition-shadow">
+        <div class="w-14 h-14 rounded-2xl aureate flex items-center justify-center mb-6">
+          <span class="material-symbols-outlined text-white text-2xl" style="font-variation-settings: 'FILL' 1;">{{ uc.icon }}</span>
+        </div>
+        <h3 class="text-xl font-extrabold text-[#201b12] mb-3 leading-tight">{{ uc.title }}</h3>
+        <p class="text-[#755a27] leading-relaxed text-sm font-medium">{{ uc.body }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<!-- ── Brand Voice Block ─────────────────────────────────────────────── -->
+<section class="py-24 px-6">
+  <div class="max-w-3xl mx-auto text-center space-y-8">
+    <div class="w-1 h-12 aureate rounded-full mx-auto"></div>
+    <blockquote class="text-2xl md:text-3xl font-bold text-[#201b12] leading-relaxed italic">
+      "{{ brand_voice }}"
+    </blockquote>
+    <div class="flex items-center justify-center gap-3">
+      <div class="w-10 h-10 rounded-full aureate flex items-center justify-center text-white font-bold text-sm">PB</div>
+      <span class="font-bold text-primary">PhoneBuddy</span>
+    </div>
+  </div>
+</section>
+
+<!-- ── Callback CTA ──────────────────────────────────────────────────── -->
+<section id="callback" class="py-24 px-6 bg-[#fef2e3]">
+  <div class="max-w-xl mx-auto text-center space-y-8">
+    <h2 class="text-3xl md:text-4xl font-extrabold text-[#201b12] tracking-tight">
+      {{ footer_cta_headline }}
+    </h2>
+    <form class="flex flex-col sm:flex-row gap-3" id="callback-form">
+      <input type="tel"
+             id="callback-number"
+             placeholder="{{ footer_cta_placeholder }}"
+             class="flex-1 bg-white border-none rounded-full px-6 py-4 text-base font-medium text-[#201b12] focus:ring-2 focus:ring-[#e6a817] shadow-sm"
+             required/>
+      <button type="submit"
+              class="aureate text-white px-8 py-4 rounded-full font-bold text-base shadow-lg hover:scale-105 active:scale-95 transition-all whitespace-nowrap">
+        {{ footer_cta_button }}
+      </button>
+    </form>
+    <p class="text-xs text-[#827561]" id="callback-status">Your number is never shared or sold.</p>
+  </div>
+</section>
+
+<!-- ── Footer ────────────────────────────────────────────────────────── -->
+<footer class="py-12 px-6 text-center border-t border-[#ede1d2]">
+  <p class="text-sm text-[#827561]">
+    <span class="font-extrabold text-primary">PhoneBuddy</span> —
+    <a href="tel:+19493046155" class="hover:text-primary transition-colors">{{ phone_display }}</a>
+    &nbsp;·&nbsp; The call that matters to you, matters to us.
+  </p>
+</footer>
+
+<script>
+document.getElementById('callback-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const number = document.getElementById('callback-number').value.trim();
+  const status = document.getElementById('callback-status');
+  if (!number) return;
+  try {
+    const r = await fetch('/callback-request', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ number, segment: '{{ slug }}' })
+    });
+    if (r.ok) {
+      status.textContent = "Got it. We'll call you shortly.";
+      status.className = 'text-sm text-[#006e23] font-bold';
+      document.getElementById('callback-number').value = '';
+    } else {
+      status.textContent = "Something went wrong. Call us directly: {{ phone_display }}";
+      status.className = 'text-sm text-[#ba1a1a]';
+    }
+  } catch {
+    status.textContent = "Can't reach the server. Call us: {{ phone_display }}";
+    status.className = 'text-sm text-[#ba1a1a]';
+  }
+});
+</script>
+</body>
+</html>

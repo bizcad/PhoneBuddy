@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% set active_nav = "onboarding" %}
+{% set page_title = "Onboarding" %}
+
+{% block content %}
+<main class="flex-1 min-h-screen flex">
+  <!-- Step Sidebar -->
+  <aside class="w-80 bg-surface-container-low hidden md:flex flex-col p-12 justify-between">
+    <div class="space-y-12">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-lg aureate-glow flex items-center justify-center text-white shadow-sm">
+          <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">support_agent</span>
+        </div>
+        <div>
+          <h1 class="text-lg font-extrabold text-primary tracking-tight leading-none">PhoneBuddy</h1>
+          <p class="text-[10px] uppercase tracking-widest text-secondary font-bold opacity-70">Setup Wizard</p>
+        </div>
+      </div>
+      <nav class="space-y-8" id="onboarding-steps">
+        <!-- Step 1: Active -->
+        <div class="flex items-center gap-4" id="step-1">
+          <div class="w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center text-xs font-bold ring-4 ring-primary/10">1</div>
+          <div>
+            <p class="text-sm font-bold text-on-surface">Welcome</p>
+            <p class="text-[11px] text-secondary font-medium">Setting the stage</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-4 opacity-50" id="step-2">
+          <div class="w-8 h-8 rounded-full bg-surface-container-highest text-stone-500 flex items-center justify-center text-xs font-bold">2</div>
+          <div>
+            <p class="text-sm font-bold text-stone-500">Connect Twilio</p>
+            <p class="text-[11px] text-stone-400 font-medium">Your phone number</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-4 opacity-50" id="step-3">
+          <div class="w-8 h-8 rounded-full bg-surface-container-highest text-stone-500 flex items-center justify-center text-xs font-bold">3</div>
+          <div>
+            <p class="text-sm font-bold text-stone-500">Set Safe Word</p>
+            <p class="text-[11px] text-stone-400 font-medium">Your emergency override</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-4 opacity-50" id="step-4">
+          <div class="w-8 h-8 rounded-full bg-surface-container-highest text-stone-500 flex items-center justify-center text-xs font-bold">4</div>
+          <div>
+            <p class="text-sm font-bold text-stone-500">Go Live</p>
+            <p class="text-[11px] text-stone-400 font-medium">Ready for launch</p>
+          </div>
+        </div>
+      </nav>
+    </div>
+    <div class="max-w-[200px]">
+      <div class="w-8 h-1 bg-tertiary rounded-full mb-4"></div>
+      <blockquote class="text-sm italic text-stone-500 leading-relaxed font-medium">
+        "Every call is an opportunity. PhoneBuddy makes sure you never miss the ones that matter."
+      </blockquote>
+    </div>
+  </aside>
+
+  <!-- Main Canvas -->
+  <div class="flex-1 flex flex-col p-6 md:p-16 lg:p-24 overflow-y-auto bg-surface-container-low">
+    <div class="max-w-3xl mx-auto w-full">
+
+      <!-- Step 1: Welcome -->
+      <div id="panel-1">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-tertiary/10 text-tertiary mb-6">
+          <span class="material-symbols-outlined text-[16px]" style="font-variation-settings: 'FILL' 1;">task_alt</span>
+          <span class="text-[10px] font-extrabold uppercase tracking-widest">Step 1 of 4</span>
+        </div>
+        <h2 class="text-4xl md:text-5xl font-extrabold text-on-surface tracking-tight mb-6">
+          Welcome, {{ user_name or "there" }}.<br/>
+          <span class="text-secondary/40 italic font-medium">Let's get you set up.</span>
+        </h2>
+        <p class="text-lg text-stone-500 leading-relaxed max-w-2xl font-medium mb-12">
+          PhoneBuddy screens your calls, filters scammers, and makes sure only the calls you care about get through. Setup takes about 4 minutes.
+        </p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
+          <div class="bg-surface-container-lowest p-8 rounded-xl ghost-border hover:shadow-lg transition-all">
+            <div class="w-12 h-12 rounded-lg bg-primary-container/20 flex items-center justify-center text-primary mb-6">
+              <span class="material-symbols-outlined text-3xl">shield</span>
+            </div>
+            <h3 class="text-lg font-bold text-on-surface mb-3">Scam Screening</h3>
+            <p class="text-stone-500 text-sm leading-relaxed">PhoneBuddy uses AI to detect and block spam, robocalls, and scam attempts before they reach you.</p>
+          </div>
+          <div class="bg-surface-container-lowest p-8 rounded-xl ghost-border hover:shadow-lg transition-all">
+            <div class="w-12 h-12 rounded-lg bg-tertiary/10 flex items-center justify-center text-tertiary mb-6">
+              <span class="material-symbols-outlined text-3xl">route</span>
+            </div>
+            <h3 class="text-lg font-bold text-on-surface mb-3">Smart Routing</h3>
+            <p class="text-stone-500 text-sm leading-relaxed">Trusted callers get through immediately. Unknown callers are screened. You stay in control with your safe word.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2: Connect Twilio (hidden) -->
+      <div id="panel-2" class="hidden">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-tertiary/10 text-tertiary mb-6">
+          <span class="material-symbols-outlined text-[16px]" style="font-variation-settings: 'FILL' 1;">task_alt</span>
+          <span class="text-[10px] font-extrabold uppercase tracking-widest">Step 2 of 4</span>
+        </div>
+        <h2 class="text-4xl font-extrabold text-on-surface tracking-tight mb-6">Connect your phone number.</h2>
+        <p class="text-stone-500 text-lg leading-relaxed mb-12">Enter your Twilio credentials to link PhoneBuddy to your phone number.</p>
+        <div class="bg-surface-container-lowest p-8 rounded-xl ghost-border space-y-6">
+          <div class="space-y-2">
+            <label class="text-[0.6875rem] font-bold uppercase tracking-wider text-outline">Twilio Account SID</label>
+            <input class="w-full bg-surface-container-high border-none rounded-lg p-3 text-on-surface focus:ring-2 focus:ring-primary-container" type="text" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" id="onboard-sid"/>
+          </div>
+          <div class="space-y-2">
+            <label class="text-[0.6875rem] font-bold uppercase tracking-wider text-outline">Auth Token</label>
+            <input class="w-full bg-surface-container-high border-none rounded-lg p-3 text-on-surface focus:ring-2 focus:ring-primary-container" type="password" placeholder="Your Twilio auth token" id="onboard-token"/>
+          </div>
+          <div class="space-y-2">
+            <label class="text-[0.6875rem] font-bold uppercase tracking-wider text-outline">Phone Number</label>
+            <input class="w-full bg-surface-container-high border-none rounded-lg p-3 text-on-surface focus:ring-2 focus:ring-primary-container" type="tel" placeholder="+1 949 304 6155" id="onboard-number"/>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3: Safe Word (hidden) -->
+      <div id="panel-3" class="hidden">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-tertiary/10 text-tertiary mb-6">
+          <span class="material-symbols-outlined text-[16px]" style="font-variation-settings: 'FILL' 1;">task_alt</span>
+          <span class="text-[10px] font-extrabold uppercase tracking-widest">Step 3 of 4</span>
+        </div>
+        <h2 class="text-4xl font-extrabold text-on-surface tracking-tight mb-6">Set your safe word.</h2>
+        <p class="text-stone-500 text-lg leading-relaxed mb-12">During any screened call, saying this word immediately transfers the call to you — no questions asked.</p>
+        <div class="bg-surface-container-lowest p-8 rounded-xl ghost-border space-y-6">
+          <div class="space-y-2">
+            <label class="text-[0.6875rem] font-bold uppercase tracking-wider text-outline">Safe Word</label>
+            <input class="w-full bg-surface-container-high border-none rounded-lg p-3 text-on-surface focus:ring-2 focus:ring-primary-container text-xl font-bold" type="text" placeholder="e.g. pineapple" id="onboard-safeword"/>
+            <p class="text-xs text-stone-500">Choose something you'd never say accidentally during a normal conversation.</p>
+          </div>
+          <div class="p-4 bg-tertiary/10 rounded-lg flex items-start gap-3">
+            <span class="material-symbols-outlined text-tertiary mt-0.5">info</span>
+            <p class="text-sm text-on-surface">PhoneBuddy listens for this word at all times during screened calls. Keep it private.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4: Go Live (hidden) -->
+      <div id="panel-4" class="hidden">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-tertiary/10 text-tertiary mb-6">
+          <span class="material-symbols-outlined text-[16px]" style="font-variation-settings: 'FILL' 1;">task_alt</span>
+          <span class="text-[10px] font-extrabold uppercase tracking-widest">Step 4 of 4</span>
+        </div>
+        <h2 class="text-4xl font-extrabold text-on-surface tracking-tight mb-6">You're all set.</h2>
+        <p class="text-stone-500 text-lg leading-relaxed mb-12">PhoneBuddy is ready to start screening your calls. Here's a summary of your setup.</p>
+        <div class="bg-surface-container-lowest p-8 rounded-xl ghost-border space-y-4 mb-8">
+          <div class="flex justify-between items-center py-3 border-b border-outline-variant/20">
+            <span class="text-sm text-stone-500">Display Name</span>
+            <span class="font-bold text-on-surface" id="summary-name">—</span>
+          </div>
+          <div class="flex justify-between items-center py-3 border-b border-outline-variant/20">
+            <span class="text-sm text-stone-500">Phone Number</span>
+            <span class="font-bold text-on-surface" id="summary-number">—</span>
+          </div>
+          <div class="flex justify-between items-center py-3">
+            <span class="text-sm text-stone-500">Safe Word</span>
+            <span class="font-bold text-on-surface" id="summary-safeword">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Navigation Footer -->
+      <div class="flex items-center gap-4 pt-8 border-t border-outline-variant/10 mt-8">
+        <button id="btn-back" onclick="changeStep(-1)" class="hidden px-8 py-4 rounded-full text-stone-500 font-bold text-sm hover:bg-surface-container-high transition-colors">
+          Back
+        </button>
+        <button id="btn-next" onclick="changeStep(1)" class="aureate-glow px-10 py-4 rounded-full text-white font-extrabold text-sm tracking-wide shadow-lg hover:scale-105 active:scale-95 transition-all">
+          Begin Setup
+        </button>
+        <a href="/dashboard" class="px-8 py-4 rounded-full text-stone-500 font-bold text-sm hover:bg-surface-container-high transition-colors">
+          Skip to Dashboard
+        </a>
+        <div class="flex-1 text-right hidden sm:block">
+          <p class="text-[10px] uppercase tracking-widest text-secondary font-bold">Estimated Time</p>
+          <p class="text-sm font-extrabold text-on-surface">4 minutes</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mobile progress bar -->
+  <div class="md:hidden fixed bottom-6 left-1/2 -translate-x-1/2 w-full px-6 z-50">
+    <div class="bg-surface-container-lowest/90 backdrop-blur-xl p-4 rounded-2xl shadow-2xl flex items-center justify-between ghost-border">
+      <span class="text-xs font-bold text-on-surface" id="mobile-step-label">Step 1 of 4</span>
+      <button onclick="changeStep(1)" class="aureate-glow px-6 py-3 rounded-full text-white text-xs font-bold">Continue</button>
+    </div>
+  </div>
+</main>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+let currentStep = 1;
+const totalSteps = 4;
+
+function changeStep(dir) {
+  const next = currentStep + dir;
+  if (next < 1 || next > totalSteps) {
+    if (next > totalSteps) {
+      window.location.href = '/dashboard';
+    }
+    return;
+  }
+
+  // Collect data before leaving step
+  if (currentStep === 4) {
+    document.getElementById('summary-name').textContent = document.getElementById('onboard-sid')?.value || '—';
+    document.getElementById('summary-number').textContent = document.getElementById('onboard-number')?.value || '—';
+    document.getElementById('summary-safeword').textContent = document.getElementById('onboard-safeword')?.value || '—';
+  }
+
+  document.getElementById(`panel-${currentStep}`).classList.add('hidden');
+  document.getElementById(`panel-${next}`).classList.remove('hidden');
+
+  // Update stepper
+  for (let i = 1; i <= totalSteps; i++) {
+    const el = document.getElementById(`step-${i}`);
+    if (i < next) {
+      el.className = 'flex items-center gap-4 opacity-70';
+      el.querySelector('div').className = 'w-8 h-8 rounded-full bg-tertiary text-white flex items-center justify-center text-xs font-bold';
+    } else if (i === next) {
+      el.className = 'flex items-center gap-4';
+      el.querySelector('div').className = 'w-8 h-8 rounded-full bg-primary text-white flex items-center justify-center text-xs font-bold ring-4 ring-primary/10';
+    } else {
+      el.className = 'flex items-center gap-4 opacity-50';
+      el.querySelector('div').className = 'w-8 h-8 rounded-full bg-surface-container-highest text-stone-500 flex items-center justify-center text-xs font-bold';
+    }
+  }
+
+  currentStep = next;
+  document.getElementById('mobile-step-label').textContent = `Step ${currentStep} of ${totalSteps}`;
+  document.getElementById('btn-back').classList.toggle('hidden', currentStep === 1);
+
+  const btnNext = document.getElementById('btn-next');
+  if (currentStep === 1) btnNext.textContent = 'Begin Setup';
+  else if (currentStep === totalSteps) btnNext.textContent = 'Go Live →';
+  else btnNext.textContent = 'Continue';
+
+  // Populate summary on step 4
+  if (currentStep === 4) {
+    document.getElementById('summary-number').textContent = document.getElementById('onboard-number')?.value || '—';
+    document.getElementById('summary-safeword').textContent = document.getElementById('onboard-safeword')?.value || '—';
+  }
+}
+</script>
+{% endblock %}

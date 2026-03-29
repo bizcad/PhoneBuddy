@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html class="light" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>PhoneBuddy{% if page_title %} — {{ page_title }}{% endif %}</title>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        colors: {
+          "on-surface": "#201b12",
+          "surface-tint": "#7c5800",
+          "surface-container-lowest": "#ffffff",
+          "inverse-primary": "#fcbb2f",
+          "on-error": "#ffffff",
+          "on-tertiary-container": "#005118",
+          "error": "#ba1a1a",
+          "background": "#fff8f3",
+          "surface-variant": "#ede1d2",
+          "on-secondary-container": "#775d29",
+          "on-primary-fixed": "#271900",
+          "inverse-surface": "#362f26",
+          "outline-variant": "#d4c4ad",
+          "tertiary-fixed-dim": "#6fdd78",
+          "secondary-fixed": "#ffdea7",
+          "outline": "#827561",
+          "primary-container": "#e6a817",
+          "on-secondary": "#ffffff",
+          "on-tertiary-fixed": "#002106",
+          "on-secondary-fixed-variant": "#5b4311",
+          "primary-fixed-dim": "#fcbb2f",
+          "tertiary-fixed": "#8bfb91",
+          "surface-bright": "#fff8f3",
+          "surface-container": "#f8ecdd",
+          "surface-container-low": "#fef2e3",
+          "on-background": "#201b12",
+          "on-primary-container": "#5c4000",
+          "on-secondary-fixed": "#271900",
+          "secondary": "#755a27",
+          "tertiary": "#006e23",
+          "on-primary-fixed-variant": "#5e4200",
+          "tertiary-container": "#5bc966",
+          "primary-fixed": "#ffdea7",
+          "on-tertiary-fixed-variant": "#005319",
+          "surface-container-high": "#f2e6d7",
+          "surface": "#fff8f3",
+          "on-tertiary": "#ffffff",
+          "on-primary": "#ffffff",
+          "surface-container-highest": "#ede1d2",
+          "inverse-on-surface": "#fbefe0",
+          "primary": "#7c5800",
+          "on-surface-variant": "#504534",
+          "surface-dim": "#e4d8ca",
+          "on-error-container": "#93000a",
+          "secondary-fixed-dim": "#e5c284",
+          "error-container": "#ffdad6",
+          "secondary-container": "#fdd898"
+        },
+        fontFamily: {
+          "headline": ["Manrope"],
+          "body": ["Manrope"],
+          "label": ["Manrope"]
+        },
+        borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+      },
+    },
+  }
+</script>
+<style>
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+  .aureate-glow {
+    background: linear-gradient(135deg, #7c5800 0%, #e6a817 100%);
+  }
+  .call-pulse {
+    box-shadow: 0 0 0 0 rgba(0, 110, 35, 0.4);
+    animation: pulse 2s infinite;
+  }
+  .ghost-border {
+    border: 1px solid rgba(212, 196, 173, 0.15);
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(0, 110, 35, 0.4); }
+    70%  { box-shadow: 0 0 0 10px rgba(0, 110, 35, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(0, 110, 35, 0); }
+  }
+</style>
+{% block extra_head %}{% endblock %}
+</head>
+<body class="bg-background text-on-surface font-body antialiased min-h-screen flex">
+
+{# ── Sidebar Nav ──────────────────────────────────────────────────────────── #}
+{% set nav_items = [
+  ("dashboard", "/dashboard",    "dashboard",  "Dashboard"),
+  ("calls",     "/calls",        "history",    "Call History"),
+  ("contacts",  "/contacts",     "contacts",   "Contacts"),
+  ("voicemail", "/voicemail",    "voicemail",  "Voicemail"),
+  ("settings",  "/settings",     "settings",   "Settings"),
+  ("onboarding","/onboarding",   "person_add", "Onboarding"),
+] %}
+
+<aside class="hidden md:flex flex-col h-screen w-64 bg-[#fff8f3] dark:bg-stone-900 p-4 space-y-2 sticky top-0">
+  <div class="mb-8 px-4 pt-4">
+    <h1 class="text-lg font-extrabold text-[#7c5800] dark:text-[#e6a817]">PhoneBuddy</h1>
+    <p class="text-xs text-secondary font-medium tracking-wide">The Tactile Concierge</p>
+  </div>
+  <nav class="flex-1 space-y-1">
+    {% for key, href, icon, label in nav_items %}
+    <a href="{{ href }}"
+       class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all
+              {% if active_nav == key %}
+                bg-[#e6a817] text-white shadow-sm
+              {% else %}
+                text-stone-600 dark:text-stone-400 hover:bg-stone-200/50 hover:translate-x-1 duration-200
+              {% endif %}">
+      <span class="material-symbols-outlined">{{ icon }}</span>
+      <span>{{ label }}</span>
+    </a>
+    {% endfor %}
+  </nav>
+  <button class="aureate-glow text-white w-full py-4 rounded-full font-bold flex items-center justify-center gap-2 mb-8 shadow-lg active:scale-95 duration-200">
+    <span class="material-symbols-outlined">add_call</span>
+    New Call
+  </button>
+  <div class="pt-4 border-t border-surface-variant space-y-1">
+    <a href="#" class="flex items-center gap-3 px-4 py-3 text-stone-600 dark:text-stone-400 rounded-lg hover:bg-stone-200/50 transition-all">
+      <span class="material-symbols-outlined">support_agent</span>
+      <span>Support</span>
+    </a>
+    <a href="#" class="flex items-center gap-3 px-4 py-3 text-stone-600 dark:text-stone-400 rounded-lg hover:bg-stone-200/50 transition-all">
+      <span class="material-symbols-outlined">logout</span>
+      <span>Logout</span>
+    </a>
+  </div>
+</aside>
+
+{# ── Main Content ─────────────────────────────────────────────────────────── #}
+<div class="flex-1 flex flex-col min-h-screen">
+  {% block content %}{% endblock %}
+</div>
+
+{# ── Mobile Bottom Nav ────────────────────────────────────────────────────── #}
+<nav class="md:hidden fixed bottom-0 left-0 right-0 bg-white shadow-2xl flex justify-around items-center py-4 px-2 z-50">
+  <a href="/dashboard" class="flex flex-col items-center gap-1 {% if active_nav == 'dashboard' %}text-primary{% else %}text-secondary{% endif %}">
+    <span class="material-symbols-outlined">dashboard</span>
+    <span class="text-[10px] font-bold">Dash</span>
+  </a>
+  <a href="/calls" class="flex flex-col items-center gap-1 {% if active_nav == 'calls' %}text-primary{% else %}text-secondary{% endif %}">
+    <span class="material-symbols-outlined">history</span>
+    <span class="text-[10px] font-bold">Calls</span>
+  </a>
+  <div class="h-14 w-14 aureate-glow rounded-full flex items-center justify-center -mt-10 border-4 border-background shadow-lg text-white">
+    <span class="material-symbols-outlined">add_call</span>
+  </div>
+  <a href="/contacts" class="flex flex-col items-center gap-1 {% if active_nav == 'contacts' %}text-primary{% else %}text-secondary{% endif %}">
+    <span class="material-symbols-outlined">group</span>
+    <span class="text-[10px] font-bold">Contacts</span>
+  </a>
+  <a href="/settings" class="flex flex-col items-center gap-1 {% if active_nav == 'settings' %}text-primary{% else %}text-secondary{% endif %}">
+    <span class="material-symbols-outlined">settings</span>
+    <span class="text-[10px] font-bold">Settings</span>
+  </a>
+</nav>
+
+{% block extra_scripts %}{% endblock %}
+</body>
+</html>

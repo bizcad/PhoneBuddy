@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% set active_nav = "settings" %}
+{% set page_title = "Settings" %}
+
+{% block content %}
+<main class="flex-1 overflow-y-auto bg-surface-container-low p-8 lg:p-12 min-h-screen">
+  <div class="max-w-5xl mx-auto space-y-12">
+    <header class="flex justify-between items-end">
+      <div>
+        <h1 class="text-[1.75rem] font-bold text-on-surface leading-tight">Account Settings</h1>
+        <p class="text-stone-500 text-sm mt-1">Refine your PhoneBuddy configuration and call handling.</p>
+      </div>
+      <button class="aureate-glow text-white px-8 py-3 rounded-full font-semibold shadow-lg hover:opacity-90 transition-all active:scale-95">
+        Save Preferences
+      </button>
+    </header>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <!-- Left: Main settings -->
+      <section class="lg:col-span-8 space-y-6">
+
+        <!-- Profile Identity -->
+        <div class="bg-surface-container-lowest p-8 rounded-xl shadow-sm ghost-border">
+          <div class="flex items-center gap-4 mb-8">
+            <div class="w-16 h-16 rounded-full bg-surface-container-highest flex items-center justify-center font-bold text-primary text-2xl">
+              {{ (user_name or "N")[0].upper() }}
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold text-on-surface">Profile Identity</h3>
+              <p class="text-sm text-stone-500">Visible to callers during AI hand-offs.</p>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="space-y-2">
+              <label class="text-[0.6875rem] font-bold uppercase tracking-wider text-outline">Display Name</label>
+              <input class="w-full bg-surface-container-high border-none rounded-lg p-3 text-on-surface focus:ring-2 focus:ring-primary-container" type="text" value="{{ user_name or 'Nick' }}" id="setting-name"/>
+            </div>
+            <div class="space-y-2">
+              <label class="text-[0.6875rem] font-bold uppercase tracking-wider text-outline">Twilio Phone Number</label>
+              <input class="w-full bg-surface-container-high border-none rounded-lg p-3 text-on-surface focus:ring-2 focus:ring-primary-container" type="text" value="{{ twilio_number or '' }}" placeholder="+1 949 304 6155" id="setting-twilio"/>
+            </div>
+          </div>
+        </div>
+
+        <!-- AI Greeting -->
+        <div class="bg-surface-container-lowest p-8 rounded-xl shadow-sm ghost-border">
+          <div class="mb-6">
+            <h3 class="text-lg font-semibold text-on-surface">AI Greeting Script</h3>
+            <p class="text-sm text-stone-500 mt-1">What PhoneBuddy says when answering your calls.</p>
+          </div>
+          <div class="space-y-2">
+            <label class="text-[0.6875rem] font-bold uppercase tracking-wider text-outline">Opening Greeting</label>
+            <textarea class="w-full bg-surface-container-high border-none rounded-lg p-3 text-on-surface focus:ring-2 focus:ring-primary-container min-h-[80px] resize-none" id="setting-greeting" placeholder="Hi! You've reached Nick's phone. I'm PhoneBuddy, an AI assistant. How can I help?">{{ greeting or '' }}</textarea>
+          </div>
+          <div class="mt-6 space-y-2">
+            <label class="text-[0.6875rem] font-bold uppercase tracking-wider text-outline">Safe Word (ends call immediately)</label>
+            <input class="w-full bg-surface-container-high border-none rounded-lg p-3 text-on-surface focus:ring-2 focus:ring-primary-container" type="text" value="{{ safe_word or '' }}" placeholder="e.g. pineapple" id="setting-safeword"/>
+            <p class="text-xs text-stone-500">Say this word during any screened call to transfer immediately.</p>
+          </div>
+        </div>
+
+        <!-- Call Routing -->
+        <div class="bg-surface-container-lowest p-8 rounded-xl shadow-sm ghost-border">
+          <div class="flex justify-between items-start mb-6">
+            <div>
+              <h3 class="text-lg font-semibold text-on-surface">Call Routing Rules</h3>
+              <p class="text-sm text-stone-500">How PhoneBuddy handles inbound calls.</p>
+            </div>
+            <span class="bg-tertiary/10 text-tertiary px-3 py-1 rounded-full text-[0.6875rem] font-bold uppercase tracking-wider">Active</span>
+          </div>
+          <div class="flex items-center gap-4 p-4 bg-surface-container-low rounded-lg border-l-4 border-tertiary">
+            <span class="material-symbols-outlined text-tertiary">forward_to_inbox</span>
+            <div class="flex-1">
+              <p class="font-semibold text-on-surface">Screen All Inbound Calls</p>
+              <p class="text-xs text-stone-500">PhoneBuddy screens, classifies, and only transfers known/trusted callers.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right: Quick settings -->
+      <section class="lg:col-span-4 space-y-8">
+
+        <!-- Notifications -->
+        <div class="bg-surface-container-lowest p-6 rounded-xl shadow-sm ghost-border space-y-6">
+          <h3 class="text-lg font-semibold text-on-surface flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary">notifications</span>
+            Notifications
+          </h3>
+          <div class="space-y-4">
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-medium text-on-surface">Email Summaries</span>
+              <button class="w-10 h-6 rounded-full bg-tertiary relative transition-colors" id="toggle-email">
+                <span class="absolute right-1 top-1 w-4 h-4 bg-white rounded-full transition-transform"></span>
+              </button>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-medium text-on-surface">Desktop Alerts</span>
+              <button class="w-10 h-6 rounded-full bg-tertiary relative transition-colors" id="toggle-desktop">
+                <span class="absolute right-1 top-1 w-4 h-4 bg-white rounded-full transition-transform"></span>
+              </button>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-medium text-on-surface">SMS Reminders</span>
+              <button class="w-10 h-6 rounded-full bg-surface-variant relative transition-colors" id="toggle-sms">
+                <span class="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Model Tier -->
+        <div class="bg-surface-container-lowest p-6 rounded-xl shadow-sm ghost-border space-y-4">
+          <h3 class="text-lg font-semibold text-on-surface flex items-center gap-2">
+            <span class="material-symbols-outlined text-primary">psychology</span>
+            AI Model Tier
+          </h3>
+          <div class="space-y-2">
+            <label class="text-[0.6875rem] font-bold uppercase tracking-wider text-outline">Claude Model</label>
+            <select class="w-full bg-surface-container-high border-none rounded-lg p-3 text-on-surface focus:ring-2 focus:ring-primary-container" id="setting-model">
+              <option value="claude-haiku-4-5-20251001">Haiku 4.5 (Fast / Free tier)</option>
+              <option value="claude-sonnet-4-6" selected>Sonnet 4.6 (Balanced)</option>
+              <option value="claude-opus-4-6">Opus 4.6 (Premium)</option>
+            </select>
+          </div>
+          <div class="space-y-2">
+            <label class="text-[0.6875rem] font-bold uppercase tracking-wider text-outline">Monthly Cost Cap</label>
+            <input class="w-full bg-surface-container-high border-none rounded-lg p-3 text-on-surface focus:ring-2 focus:ring-primary-container" type="number" placeholder="10" id="setting-cost-cap"/>
+            <p class="text-xs text-stone-500">PhoneBuddy pauses AI screening when this limit is reached.</p>
+          </div>
+        </div>
+
+        <!-- Support -->
+        <div class="bg-primary/5 p-6 rounded-xl space-y-3 relative overflow-hidden">
+          <div class="absolute -right-4 -bottom-4 opacity-10">
+            <span class="material-symbols-outlined text-8xl text-primary" style="font-variation-settings: 'FILL' 1;">help_center</span>
+          </div>
+          <h4 class="font-bold text-primary">Need help?</h4>
+          <p class="text-xs text-stone-500 leading-relaxed">PhoneBuddy support is standing by to help you optimize your call flows.</p>
+          <a href="#" class="text-xs font-bold text-primary flex items-center gap-1 group">
+            Contact Support
+            <span class="material-symbols-outlined text-sm group-hover:translate-x-1 transition-transform">arrow_forward</span>
+          </a>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+{% endblock %}
