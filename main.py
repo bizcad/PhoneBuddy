@@ -626,6 +626,95 @@ Reply with only the question itself, no preamble."""
         return "That's really interesting. Can you tell me a little more about that?"
 
 
+async def _precache_predictions(
+    current_question: str,
+    transcript: list[str],
+    cfg: dict,
+    call_sid: str,
+) -> None:
+    """
+    Background task — runs while caller listens to current response.
+    Asks Haiku to predict 5 likely caller replies and the ideal PB follow-up for each.
+    Pre-fetches TTS for all 5 so next turn is instant on cache hit.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return
+
+    history = " | ".join(transcript[-3:]) if transcript else ""
+    prompt = f"""Conversation so far: {history or "none"}
+PB just asked: "{current_question}"
+
+Predict 5 likely things the caller might say next. For each, write the ideal short PB follow-up (1-2 sentences, warm, curious, never mentions price).
+
+Reply with JSON only, no markdown:
+[{{"caller_says": "...", "pb_reply": "..."}}, ...]"""
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 500,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            text = resp.json()["content"][0]["text"].strip()
+            predictions = json.loads(text)
+
+        # Store prediction map in active_calls for this SID
+        if call_sid in active_calls:
+            active_calls[call_sid]["predictions"] = predictions
+
+        # Pre-fetch TTS for each predicted PB reply — warms the cache
+        for pred in predictions:
+            pb_reply = pred.get("pb_reply", "")
+            if pb_reply:
+                cache_key = f"receptionist:{pb_reply}"
+                if cache_key not in _tts_cache:
+                    await _tts_elevenlabs(pb_reply, cfg, "receptionist")
+
+        log.info(f"Pre-cached {len(predictions)} predictions  SID={call_sid}")
+
+    except Exception as e:
+        log.error(f"Precache predictions error: {e}")
+
+
+def _find_cached_reply(speech: str, call_sid: str) -> Optional[str]:
+    """
+    Fuzzy match caller's speech against stored predictions.
+    Returns pre-cached PB reply text if a good match is found, else None.
+    Simple word-overlap score — good enough for common responses.
+    """
+    call = active_calls.get(call_sid, {})
+    predictions = call.get("predictions", [])
+    if not predictions:
+        return None
+
+    speech_words = set(speech.lower().split())
+    best_reply = None
+    best_score = 0
+
+    for pred in predictions:
+        predicted_words = set(pred.get("caller_says", "").lower().split())
+        if not predicted_words:
+            continue
+        overlap = len(speech_words & predicted_words) / max(len(predicted_words), 1)
+        if overlap > best_score and overlap >= 0.35:  # 35% word overlap threshold
+            best_score = overlap
+            best_reply = pred.get("pb_reply")
+
+    if best_reply:
+        log.info(f"Prediction cache hit  SID={call_sid}  score={best_score:.2f}")
+    return best_reply
+
+
 @app.post("/call/engage-response")
 async def engage_response(
     request: Request,
@@ -677,8 +766,23 @@ async def engage_response(
 </Response>"""
         return Response(content=twiml, media_type="application/xml")
 
-    # Return filler immediately — Haiku generates the real follow-up in engage-followup.
-    # Caller hears something within ~50ms instead of waiting 1-2s for Haiku.
+    # Check prediction cache first — if Haiku guessed right, reply is instant
+    cached_reply = _find_cached_reply(speech, CallSid)
+    if cached_reply:
+        # TTS already in _tts_cache — Twilio fetches it in ~50ms
+        asyncio.create_task(_precache_predictions(cached_reply, transcript_so_far, cfg, CallSid))
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play(cached_reply, base_url)}
+  <Gather input="speech" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="10" language="en-US">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/voicemail</Redirect>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # Cache miss — return filler immediately, generate fresh in engage-followup
     encoded_speech = urllib.parse.quote(speech, safe="")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -707,6 +811,9 @@ async def engage_followup(
 
     followup = await _generate_followup(speech, transcript_so_far, cfg)
     log.info(f"Follow-up generated  SID={call_sid}  question='{followup}'")
+
+    # Fire background precache — predicts next 5 replies while caller listens to this one
+    asyncio.create_task(_precache_predictions(followup, transcript_so_far, cfg, call_sid))
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
