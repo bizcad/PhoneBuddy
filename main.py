@@ -274,10 +274,43 @@ async def inbound_call(
         "status": "answering — silence trap active",
     })
 
-    # ── SPAM TRAP + NATURAL PICKUP ──
-    # "This is Nick" defeats autodialers — they wait for "Hello" to trigger transfer.
-    # Real humans respond naturally. 3s silence window before second prompt.
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+
+    # ── CALLER ID LOOKUP — branch before playing anything ────────────────────
+    contact = _match_contact(From, "", cfg)
+
+    if contact and "self" not in contact.get("tags", []):
+        # Known contact (not owner) — greet by first name and transfer immediately.
+        first_name = contact["name"].split()[0]
+        log.info(f"Known contact '{first_name}'  SID={CallSid}  → forwarding")
+        await broadcast_dashboard({
+            "event": "call_start",
+            "sid": CallSid,
+            "from": From,
+            "status": f"known contact: {first_name}",
+        })
+        _evolve_context(CallSid, From, "contact", "forwarded", cfg)
+        greeting = f"Hi {first_name}, this is Nick's assistant. I'm screening his calls today. Let me transfer you right now — one moment please."
+        cell = cfg["user"]["cell"]
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play(greeting, base_url)}
+  <Dial callerId="{cfg['user'].get('landline') or cell}">
+    <Number url="{base_url}/call/whisper?name={first_name}">{cell}</Number>
+  </Dial>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # ── SPAM TRAP + NATURAL PICKUP ────────────────────────────────────────────
+    # "This is Nick" defeats autodialers — they wait for "Hello" to trigger transfer.
+    # Owner (self) also hits this path — safeword handled in /call/classify.
+    # Unknown callers get the second prompt asking them to identify themselves.
+    await broadcast_dashboard({
+        "event": "call_start",
+        "sid": CallSid,
+        "from": From,
+        "status": "spam trap active",
+    })
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play_filler("this-is-nick.wav", base_url)}
@@ -285,7 +318,7 @@ async def inbound_call(
           speechTimeout="auto" timeout="3" language="en-US">
     <Pause length="1"/>
   </Gather>
-  {_play("Hello. I don't recognize your number. I'm Nick's personal assistant. How can I help you?", base_url)}
+  {_play("Hello. I don't recognize your number. I'm Nick's personal assistant. If you'll please tell me your name and the purpose of your call, I'd be happy to help you.", base_url)}
   <Gather input="speech" action="{base_url}/call/classify"
           speechTimeout="auto" timeout="3" language="en-US">
     <Pause length="1"/>
