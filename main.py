@@ -431,6 +431,9 @@ async def classify_call(
     if CallSid in active_calls:
         active_calls[CallSid]["transcript"].append(transcript_text)
 
+    if transcript_text:
+        await broadcast_dashboard({"event": "transcript", "sid": CallSid, "from": caller_number, "speech": transcript_text})
+
     # ── R: RETRIEVE ───────────────────────────────────────────────────────────
     # Pull everything known about this caller before reasoning begins.
     context = await _retrieve_context(caller_number, cfg)

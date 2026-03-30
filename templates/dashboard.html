@@ -152,16 +152,25 @@ ws.onmessage = (msg) => {
 
   // Activity feed entry
   const feed = document.getElementById('activity-feed');
-  const dot = e.classification?.includes('scam') ? 'bg-error' :
+  const dot = e.event === 'transcript' ? 'bg-secondary' :
+               e.classification?.includes('scam') ? 'bg-error' :
                e.event === 'recording_saved' ? 'bg-tertiary' : 'bg-primary';
   const item = document.createElement('div');
   item.className = 'relative pl-10';
-  item.innerHTML = `
-    <div class="absolute left-1.5 top-1.5 h-3 w-3 rounded-full ${dot} border-2 border-white"></div>
-    <p class="text-xs font-bold text-secondary uppercase tracking-widest mb-1">${new Date().toLocaleTimeString()}</p>
-    <h6 class="font-bold text-sm">${e.event?.replace(/_/g,' ') || 'Event'}</h6>
-    <p class="text-xs text-secondary mt-1">${e.from || ''} ${e.classification ? '— ' + e.classification : ''}</p>
-  `;
+  if (e.event === 'transcript') {
+    item.innerHTML = `
+      <div class="absolute left-1.5 top-1.5 h-3 w-3 rounded-full ${dot} border-2 border-white"></div>
+      <p class="text-xs font-bold text-secondary uppercase tracking-widest mb-1">${new Date().toLocaleTimeString()} · Caller said</p>
+      <p class="text-sm italic text-on-surface">"${e.speech}"</p>
+    `;
+  } else {
+    item.innerHTML = `
+      <div class="absolute left-1.5 top-1.5 h-3 w-3 rounded-full ${dot} border-2 border-white"></div>
+      <p class="text-xs font-bold text-secondary uppercase tracking-widest mb-1">${new Date().toLocaleTimeString()}</p>
+      <h6 class="font-bold text-sm">${e.event?.replace(/_/g,' ') || 'Event'}</h6>
+      <p class="text-xs text-secondary mt-1">${e.from || ''} ${e.classification ? '— ' + e.classification : ''}</p>
+    `;
+  }
   // Remove "no activity" placeholder on first real event
   const placeholder = feed.querySelector('em');
   if (placeholder) placeholder.closest('.relative').remove();
