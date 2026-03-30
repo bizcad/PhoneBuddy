@@ -88,9 +88,9 @@
 
     <!-- Right Column: Activity Feed -->
     <div class="col-span-12 lg:col-span-4 space-y-8">
-      <section class="bg-surface-container-low rounded-3xl p-8 min-h-[500px]">
-        <h3 class="text-xl font-bold text-on-surface mb-8">Recent Activity</h3>
-        <div class="space-y-8 relative" id="activity-feed">
+      <section class="bg-surface-container-low rounded-3xl p-8 flex flex-col" style="height:500px">
+        <h3 class="text-xl font-bold text-on-surface mb-4">Recent Activity</h3>
+        <div class="flex-1 overflow-y-auto space-y-6 relative pr-1" id="activity-feed">
           <div class="absolute left-3 top-2 bottom-2 w-px bg-outline-variant"></div>
           <div class="relative pl-10 text-secondary text-sm">
             <em>No activity yet.</em>
@@ -175,7 +175,35 @@ ws.onmessage = (msg) => {
   const placeholder = feed.querySelector('em');
   if (placeholder) placeholder.closest('.relative').remove();
   feed.insertBefore(item, feed.children[1] || null);
+  feed.scrollTop = feed.scrollHeight;
+
+  // Persist to localStorage (survives F5)
+  const stored = JSON.parse(localStorage.getItem('pb_activity') || '[]');
+  stored.unshift({event: e.event, from: e.from, classification: e.classification, speech: e.speech, t: new Date().toLocaleTimeString()});
+  localStorage.setItem('pb_activity', JSON.stringify(stored.slice(0, 50)));
 };
+
+// ── Restore activity feed from localStorage on page load ─────────────────────
+(function restoreActivity() {
+  const stored = JSON.parse(localStorage.getItem('pb_activity') || '[]');
+  if (!stored.length) return;
+  const feed = document.getElementById('activity-feed');
+  const placeholder = feed.querySelector('em');
+  if (placeholder) placeholder.closest('.relative').remove();
+  stored.forEach(e => {
+    const dot = e.event === 'transcript' ? 'bg-secondary' :
+                e.classification?.includes('scam') ? 'bg-error' :
+                e.event === 'recording_saved' ? 'bg-tertiary' : 'bg-primary';
+    const item = document.createElement('div');
+    item.className = 'relative pl-10';
+    if (e.event === 'transcript') {
+      item.innerHTML = `<div class="absolute left-1.5 top-1.5 h-3 w-3 rounded-full ${dot} border-2 border-white"></div><p class="text-xs font-bold text-secondary uppercase tracking-widest mb-1">${e.t} · Caller said</p><p class="text-sm italic text-on-surface">"${e.speech}"</p>`;
+    } else {
+      item.innerHTML = `<div class="absolute left-1.5 top-1.5 h-3 w-3 rounded-full ${dot} border-2 border-white"></div><p class="text-xs font-bold text-secondary uppercase tracking-widest mb-1">${e.t}</p><h6 class="font-bold text-sm">${e.event?.replace(/_/g,' ') || 'Event'}</h6><p class="text-xs text-secondary mt-1">${e.from || ''} ${e.classification ? '— ' + e.classification : ''}</p>`;
+    }
+    feed.appendChild(item);
+  });
+})();
 
 // ── Recent calls panel ───────────────────────────────────────────────────────
 async function loadRecentCalls() {
