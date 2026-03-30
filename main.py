@@ -624,7 +624,7 @@ async def admin_query(
 
     call = active_calls.get(CallSid, {})
     asyncio.create_task(_post_ppa_sensation(
-        caller_id=call.get("caller_number", CallSid),
+        caller_id=call.get("from", CallSid),
         classification="admin",
         outcome="admin_hangup",
         transcript=call.get("transcript", []) + [query],
