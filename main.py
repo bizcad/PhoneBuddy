@@ -982,13 +982,13 @@ async def _admin_mode_response(request: Request, call_sid: str,
 
     # Get call summary from active calls log
     total_today = len(active_calls)
-    summary = f"Hello Nick. You have had {total_today} calls today. How can I help you?"
+    call_word = "call" if total_today == 1 else "calls"
+    summary = f"Hi Nick. {total_today} {call_word} so far today. What do you need?"
 
     # TODO Phase 2: query call log, trigger outbound hold proxy, etc.
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play_filler("hi-this-is-nick.wav", base_url)}
   {_play(summary, base_url)}
   <Gather input="speech" action="{base_url}/call/admin-query" speechTimeout="5" timeout="10">
     <Pause length="1"/>
