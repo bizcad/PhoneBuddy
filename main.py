@@ -19,7 +19,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import sqlite3
 import urllib.parse
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -48,8 +50,68 @@ logging.basicConfig(
 )
 log = logging.getLogger("phonebuddy")
 
+# ── SQLite — schema init ──────────────────────────────────────────────────────
+_PB_DATA_DIR = Path(os.environ.get("PB_DATA_DIR", "/data"))
+_DB_PATH = _PB_DATA_DIR / "phonebuddy.db"
+
+_CREATE_CONTACTS = """
+CREATE TABLE IF NOT EXISTS contacts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone      TEXT    UNIQUE NOT NULL,
+    name       TEXT    NOT NULL,
+    notes      TEXT,
+    tags       TEXT,
+    created_at TEXT    NOT NULL,
+    updated_at TEXT    NOT NULL
+);
+"""
+
+_CREATE_CALL_HISTORY = """
+CREATE TABLE IF NOT EXISTS call_history (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_sid         TEXT    UNIQUE NOT NULL,
+    phone            TEXT    NOT NULL,
+    name             TEXT,
+    classification   TEXT,
+    suspicion_score  REAL,
+    outcome          TEXT,
+    transcript       TEXT,
+    started_at       TEXT    NOT NULL,
+    ended_at         TEXT
+);
+"""
+
+
+def get_db() -> sqlite3.Connection:
+    """Open (or create) the SQLite DB and return a connection with WAL mode enabled."""
+    _PB_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    """Create tables if they don't exist yet. Called at app startup."""
+    conn = get_db()
+    try:
+        conn.execute(_CREATE_CONTACTS)
+        conn.execute(_CREATE_CALL_HISTORY)
+        conn.commit()
+        log.info("SQLite schema ready: %s", _DB_PATH)
+    finally:
+        conn.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan handler — runs init_db before accepting requests."""
+    init_db()
+    yield
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="PhoneBuddy", version="0.1.0")
+app = FastAPI(title="PhoneBuddy", version="0.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
