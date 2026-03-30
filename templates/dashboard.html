@@ -125,7 +125,7 @@
 {% block extra_scripts %}
 <script>
 // ── WebSocket live feed ──────────────────────────────────────────────────────
-const ws = new WebSocket(`ws://${location.host}/ws/dashboard`);
+const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/dashboard`);
 
 ws.onopen = () => {
   document.getElementById('buddy-status').textContent = 'Buddy Active — Listening ✓';
