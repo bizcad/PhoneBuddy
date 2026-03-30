@@ -621,6 +621,15 @@ async def admin_query(
 
     # TODO Phase 2: parse command intent (recent calls, hold proxy, whitelist add, etc.)
     reply = f"You said: {query}. Admin commands are coming in the next update. Goodbye for now."
+
+    call = active_calls.get(CallSid, {})
+    asyncio.create_task(_post_ppa_sensation(
+        caller_id=call.get("caller_number", CallSid),
+        classification="admin",
+        outcome="admin_hangup",
+        transcript=call.get("transcript", []) + [query],
+    ))
+
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play(reply, base_url)}
