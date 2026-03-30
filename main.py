@@ -116,6 +116,58 @@ def _play_filler(filename: str, base_url: str) -> str:
     return f'<Play>{base_url}/static/audio/fillers/{filename}</Play>'
 
 
+# ── Filler Chains ─────────────────────────────────────────────────────────────
+# Each chain is 2-3 short WAVs that play sequentially before the <Redirect>.
+# The combined duration buys time for Haiku + ElevenLabs to complete.
+# Add new chains as Nick records new fillers.
+FILLER_CHAINS: dict[str, list[str]] = {
+    # Default: caller said something thoughtful, PB is processing
+    "thinking":   ["hmmm(pondering).wav", "i-want-to-get-this-right.wav"],
+    # Caller said something surprising or unexpected
+    "surprised":  ["oh(slight-surprise).wav", "hmmm(pondering).wav"],
+    # Caller is engaged, agreeing, or enthusiastic
+    "engaged":    ["oh-yeah(affirmative).wav", "let-me-think-about-that.wav"],
+    # Caller is skeptical, pushing back, or cautious
+    "skeptical":  ["i-see.wav", "hmmm(pondering).wav"],
+    # Caller expressed a problem, pain, or need
+    "warm":       ["aha.wav", "i-want-to-get-this-right.wav"],
+    # Caller gave a short affirmative (mm-hmm, right, ok)
+    "agreement":  ["mm-hmm(affirmative-nasal).wav", "hmmm(pondering).wav"],
+    # Caller's speech was unclear or very short
+    "confused":   ["hmmm(pondering).wav", "could-you-say-that-again-please.wav"],
+}
+
+# Keyword buckets for chain selection — checked in priority order
+_CHAIN_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("surprised",  ["really", "wow", "no way", "seriously", "what", "unbelievable", "crazy", "omg"]),
+    ("engaged",    ["yes", "yeah", "absolutely", "totally", "exactly", "right on", "love it", "awesome", "great"]),
+    ("agreement",  ["mm", "uh huh", "right", "sure", "ok", "okay", "got it", "i see"]),
+    ("skeptical",  ["but", "however", "i don't know", "not sure", "seems like", "skeptical", "doubt", "really though"]),
+    ("warm",       ["problem", "issue", "help", "trouble", "stuck", "broke", "struggling", "need", "want", "looking for"]),
+]
+
+
+def _select_chain(speech: str) -> str:
+    """Pick a filler chain tone based on the caller's words.
+    Pure keyword match — runs in microseconds, no LLM.
+    Falls back to 'thinking' when nothing matches.
+    """
+    lower = speech.lower()
+    for chain_name, keywords in _CHAIN_KEYWORDS:
+        if any(kw in lower for kw in keywords):
+            return chain_name
+    return "thinking"
+
+
+def _play_filler_chain(chain_name: str, base_url: str) -> str:
+    """Return concatenated <Play> elements for an entire filler chain.
+    Combined duration covers Haiku + ElevenLabs latency before the <Redirect> fires.
+    Falls back to single hmmm if chain name is unknown.
+    """
+    fillers = FILLER_CHAINS.get(chain_name, FILLER_CHAINS["thinking"])
+    return "\n  ".join(_play_filler(f, base_url) for f in fillers)
+
+
 @app.get("/tts")
 async def tts_serve(text: str, role: str = "receptionist"):
     """
@@ -782,11 +834,13 @@ async def engage_response(
 </Response>"""
         return Response(content=twiml, media_type="application/xml")
 
-    # Cache miss — return filler immediately, generate fresh in engage-followup
+    # Cache miss — play filler chain immediately, generate fresh in engage-followup.
+    # Chain duration covers Haiku + ElevenLabs latency before Twilio hits the Redirect.
+    chain_name = _select_chain(speech)
     encoded_speech = urllib.parse.quote(speech, safe="")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play_filler("hmmm(pondering).wav", base_url)}
+  {_play_filler_chain(chain_name, base_url)}
   <Redirect method="POST">{base_url}/call/engage-followup?speech={encoded_speech}&amp;sid={CallSid}</Redirect>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
