@@ -16,8 +16,8 @@ user:
   landline: null                       # skipping for now; will be Twilio number after port
 
   # Admin access
-  safe_word: "Nick here 1852"          # spoken phrase — 4+ syllables, low collision risk
-  safe_word_alt: "bizcad1852"          # alternate — useful if first is misheard
+  safe_word: "1852"                    # short numeric — high STT reliability
+  safe_word_alt: "eighteen fifty two"  # spoken-out version for STT variance
   safe_word_mode: "spoken_phrase"      # options: spoken_phrase | dtmf_pin | caller_id_only
 
 # Name formality scoring weights
