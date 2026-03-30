@@ -56,6 +56,24 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 # ── Config ────────────────────────────────────────────────────────────────────
 CONFIG_PATH = os.environ.get("PHONEBUDDY_CONFIG", "config/user-profile.yaml")
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
+PPA_URL = os.environ.get("PPA_URL", "").strip().rstrip("/")
+
+
+async def _post_ppa_sensation(caller_id: str, classification: str, outcome: str, transcript: list[str]) -> None:
+    """Fire-and-forget: send call summary to PPA /sensation."""
+    if not PPA_URL:
+        return
+    payload = {
+        "input": f"Call ended. Classification: {classification}. Outcome: {outcome}. Transcript: {' | '.join(transcript[-5:])}",
+        "source": "phonebuddy",
+        "caller_id": caller_id,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(f"{PPA_URL}/sensation", json=payload)
+    except Exception as exc:
+        log.warning("PPA sensation post failed: %s", exc)
+
 
 def load_config() -> dict:
     with open(CONFIG_PATH) as f:
@@ -271,6 +289,13 @@ def _evolve_context(
         f"E3/Evolve  SID={call_sid}  caller={caller_number}"
         f"  classification={classification}  outcome={outcome}"
     )
+    call = active_calls.get(call_sid, {})
+    asyncio.create_task(_post_ppa_sensation(
+        caller_id=caller_number,
+        classification=classification,
+        outcome=outcome,
+        transcript=call.get("transcript", []),
+    ))
 
 
 # ── Active calls (in-memory for MVP) ─────────────────────────────────────────
