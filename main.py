@@ -138,8 +138,42 @@ async def _post_ppa_sensation(caller_id: str, classification: str, outcome: str,
 
 
 def load_config() -> dict:
+    """Load config from YAML, then overlay any env vars set by Ted at deploy time.
+    YAML = factory defaults. Env vars = per-customer configuration.
+    All overrides are optional — missing env vars leave the YAML value intact.
+    """
     with open(CONFIG_PATH) as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+
+    # ── Identity ──────────────────────────────────────────────────────────────
+    if v := os.environ.get("OWNER_NAME"):
+        cfg["user"]["preferred_name"] = v
+    if v := os.environ.get("OWNER_CELL"):
+        cfg["user"]["cell"] = v
+    if v := os.environ.get("SAFE_WORD"):
+        cfg["user"]["safe_word"] = v
+    if v := os.environ.get("SAFE_WORD_ALT"):
+        cfg["user"]["safe_word_alt"] = v
+
+    # ── Persona (from persona builder) ───────────────────────────────────────
+    # PB_VOICE_TONE     : warm | professional | efficient | protective | playful
+    # PB_TRANSPARENCY   : disclosed | answering_service | honest_if_asked
+    # PB_RECORDING_MODE : full | summary_only | log_only | none
+    # PB_ESCALATION     : text_summary | direct_interrupt | schedule_callback | fully_autonomous
+    if v := os.environ.get("PB_VOICE_TONE"):
+        cfg.setdefault("persona", {}).setdefault("voice", {})["tone"] = v
+    if v := os.environ.get("PB_TRANSPARENCY"):
+        cfg.setdefault("persona", {})["transparency"] = v
+    if v := os.environ.get("PB_RECORDING_MODE"):
+        cfg.setdefault("persona", {}).setdefault("recording", {})["mode"] = v
+    if v := os.environ.get("PB_ESCALATION"):
+        cfg.setdefault("persona", {}).setdefault("escalation", {})["mode"] = v
+
+    # ── Voice ─────────────────────────────────────────────────────────────────
+    if v := os.environ.get("ELEVENLABS_VOICE_ID"):
+        cfg["voice"]["receptionist"]["voice_id"] = v
+
+    return cfg
 
 # ── TTS — ElevenLabs receptionist / Polly IVR ────────────────────────────────
 
@@ -404,7 +438,12 @@ async def inbound_call(
         "transcript": [],
         "classification": None,
         "suspicion_score": 0.0,
-        "pitched": False,  # True after first PB pitch — prevents re-pitching
+        "pitched": False,          # True after first PB pitch — prevents re-pitching
+        "phase": "land",           # land → purpose → surface → close
+        "signals": [],             # accumulated signal IDs across all turns
+        "features_declared": [],   # feature IDs already shown this call
+        "feature_responses": {},   # feature_id → yes/no/ambiguous
+        "close_attempts": 0,       # number of close attempts made
     }
 
     await broadcast_dashboard({
@@ -455,19 +494,84 @@ async def inbound_call(
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play_filler("this-is-nick.wav", base_url)}
-  <Gather input="speech" action="{base_url}/call/classify"
-          speechTimeout="auto" timeout="3" language="en-US">
+  <Gather input="speech dtmf" action="{base_url}/call/classify"
+          speechTimeout="auto" timeout="3" language="en-US" finishOnKey="#">
     <Pause length="1"/>
   </Gather>
   {_play("Hello. I don't recognize your number. I'm Nick's personal assistant. If you'll please tell me your name and the purpose of your call, I'd be happy to help you.", base_url)}
-  <Gather input="speech" action="{base_url}/call/classify"
-          speechTimeout="auto" timeout="3" language="en-US">
+  <Gather input="speech dtmf" action="{base_url}/call/classify"
+          speechTimeout="auto" timeout="3" language="en-US" finishOnKey="#">
     <Pause length="1"/>
   </Gather>
   <Redirect>{base_url}/call/voicemail</Redirect>
 </Response>"""
 
     return Response(content=twiml, media_type="application/xml")
+
+
+_feature_brief_cache: Optional[dict] = None
+
+def _load_feature_brief() -> dict:
+    global _feature_brief_cache
+    if _feature_brief_cache is None:
+        path = Path("config/pb-feature-brief.yaml")
+        if path.exists():
+            import yaml
+            with open(path) as f:
+                _feature_brief_cache = yaml.safe_load(f)
+        else:
+            _feature_brief_cache = {"features": [], "signals": []}
+    return _feature_brief_cache
+
+
+def _scan_signals(speech: str, brief: dict) -> list[str]:
+    """
+    Scan caller speech against the signal taxonomy in pb-feature-brief.yaml.
+    Returns list of matched signal IDs. Pure keyword matching — no LLM.
+    """
+    speech_lower = speech.lower()
+    matched = []
+    for signal in brief.get("signals", []):
+        for kw in signal.get("keywords", []):
+            if kw.lower() in speech_lower:
+                matched.append(signal["id"])
+                break
+    return matched
+
+
+def _select_prospect_feature(signals: list[str], declared: list[str], brief: dict) -> Optional[dict]:
+    """
+    Pick the highest-scoring undeclared feature based on accumulated signals.
+    Score = feature weight × number of matching signal hits.
+    Falls back to highest-weight undeclared feature if no signal matches.
+    """
+    features = brief.get("features", [])
+    signal_set = set(signals)
+    best = None
+    best_score = -1.0
+
+    for f in features:
+        if f["id"] in declared:
+            continue
+        if f.get("weight", 0) == 0:  # geo_rapport is metadata-triggered, not signal-driven
+            continue
+        hits = len(signal_set & set(f.get("signals", [])))
+        score = f.get("weight", 0.5) * max(hits, 0.5)  # 0.5 floor so unmatched features can still surface
+        if score > best_score:
+            best_score = score
+            best = f
+
+    return best
+
+
+def _is_dtmf_safeword(digits: str, cfg: dict) -> bool:
+    """
+    Returns True if the DTMF digit string contains the safeword sequence.
+    Expected sequence: *1852 (user presses * then 1852, then # to submit).
+    Twilio strips the finishOnKey (#) before posting Digits, so we check for *1852.
+    """
+    safe_word = cfg["user"]["safe_word"]          # "1852"
+    return digits.strip() == f"*{safe_word}"
 
 
 @app.post("/call/classify")
@@ -477,9 +581,10 @@ async def classify_call(
     From: str = Form(...),
     SpeechResult: str = Form(default=""),
     Confidence: float = Form(default=0.0),
+    Digits: str = Form(default=""),
 ):
     """
-    SRCGEEE pipeline — Twilio posts here with the caller's speech.
+    SRCGEEE pipeline — Twilio posts here with the caller's speech or DTMF.
     Each labelled block is one phase of the pipeline.
     """
     cfg = load_config()
@@ -496,6 +601,14 @@ async def classify_call(
     if transcript_text:
         await broadcast_dashboard({"event": "transcript", "sid": CallSid, "from": caller_number, "speech": transcript_text})
 
+    # Accumulate signals on every turn — everything the caller says is a tell
+    if transcript_text and CallSid in active_calls:
+        brief = _load_feature_brief()
+        new_signals = _scan_signals(transcript_text, brief)
+        active_calls[CallSid]["signals"].extend(new_signals)
+        if new_signals:
+            log.info(f"S/Signals  SID={CallSid}  new={new_signals}  total={active_calls[CallSid]['signals']}")
+
     # ── R: RETRIEVE ───────────────────────────────────────────────────────────
     # Pull everything known about this caller before reasoning begins.
     context = await _retrieve_context(caller_number, cfg)
@@ -511,12 +624,14 @@ async def classify_call(
 
     # Safe word check — owner calling in. Safeword is the ONLY gate, not caller ID.
     # Nick can call from his own number to test the engagement flow without safeword.
+    # Accepts both spoken safeword and DTMF sequence (*<safe_word># on the keypad).
     safe_word = cfg["user"]["safe_word"].lower()
     safe_word_alt = cfg["user"].get("safe_word_alt", "").lower()
-    if safe_word in transcript_text.lower() or safe_word_alt in transcript_text.lower():
-        if caller_number == cfg["user"]["cell"]:
-            log.info(f"Admin mode activated  SID={CallSid}")
-            return await _admin_mode_response(request, CallSid, transcript_text, cfg)
+    spoken_match = safe_word in transcript_text.lower() or safe_word_alt in transcript_text.lower()
+    dtmf_match = bool(Digits) and _is_dtmf_safeword(Digits, cfg)
+    if (spoken_match or dtmf_match) and caller_number == cfg["user"]["cell"]:
+        log.info(f"Admin mode activated  SID={CallSid}  method={'dtmf' if dtmf_match else 'speech'}")
+        return await _admin_mode_response(request, CallSid, transcript_text or f"[DTMF: {Digits}]", cfg)
 
     # Known contact from whitelist — forward immediately (no Claude needed)
     # "self" tag is intentionally excluded here — owner must use safeword, not just caller ID.
@@ -563,6 +678,12 @@ async def classify_call(
     if classification in ("medical", "professional"):
         _evolve_context(CallSid, caller_number, classification, "escalated_hitl", cfg)
         return await _hold_and_brief(request, CallSid, transcript_text, classification, cfg)
+
+    if classification == "prospect":
+        if CallSid in active_calls:
+            active_calls[CallSid]["phase"] = "surface"
+        _evolve_context(CallSid, caller_number, classification, "prospect_surface", cfg)
+        return await _surface_feature(request, CallSid, cfg)
 
     # Every other caller — engage, collect, learn. No firewalls.
     # Scammers, solicitors, unknowns all get the engagement path.
@@ -654,6 +775,328 @@ async def _engage_caller(request: Request, call_sid: str, classification: str, c
     return Response(content=twiml, media_type="application/xml")
 
 
+async def _surface_feature(request: Request, call_sid: str, cfg: dict) -> Response:
+    """
+    Prospect path — declare the highest-signal feature.
+    Action routes to /call/surface-response for yes/no/ambiguous handling.
+    """
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    call = active_calls.get(call_sid, {})
+    signals = call.get("signals", [])
+    declared = call.get("features_declared", [])
+    brief = _load_feature_brief()
+
+    feature = _select_prospect_feature(signals, declared, brief)
+    if not feature:
+        # Exhausted all features — go to soft close
+        return await _prospect_withdrawal(request, call_sid, cfg)
+
+    if call_sid in active_calls:
+        active_calls[call_sid]["features_declared"].append(feature["id"])
+
+    declaration = f"Phone Buddy can {feature['headline'].lower()}. {feature['hook']}"
+    log.info(f"Surface  SID={call_sid}  feature={feature['id']}")
+
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play(declaration, base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/surface-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/surface-response</Redirect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+async def _prospect_withdrawal(request: Request, call_sid: str, cfg: dict) -> Response:
+    """Final withdrawal — Nick's voice, from the heart, pause and wait."""
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    log.info(f"Withdrawal  SID={call_sid}")
+    if call_sid in active_calls:
+        active_calls[call_sid]["phase"] = "withdrawal"
+
+    withdrawal_text = (
+        "Here's the thing — there's no catch. "
+        "I hated having control of my phone taken away from me. "
+        "I hated it so badly I decided to do something about it. "
+        "The only thing I'm asking is that you help me eradicate unwanted intrusions on your phone. "
+        "If you're not truly willing to do that, I completely understand. "
+        "I seriously appreciate you calling me today."
+    )
+
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play(withdrawal_text, base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/close-response"
+          speechTimeout="auto" timeout="12" language="en-US" finishOnKey="#">
+    <Pause length="3"/>
+  </Gather>
+  <Hangup/>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/call/surface-response")
+async def surface_response(
+    request: Request,
+    CallSid: str = Form(default=""),
+    From: str = Form(default=""),
+    SpeechResult: str = Form(default=""),
+    Digits: str = Form(default=""),
+):
+    """
+    Prospect declaration state machine.
+    YES  → close
+    NO   → "if not that, what would interest you?" + next feature
+    AMBIGUOUS → "tell me more" → clarify → back here
+    """
+    cfg = load_config()
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    speech = SpeechResult.strip()
+
+    # DTMF safeword check
+    if Digits and _is_dtmf_safeword(Digits, cfg) and From == cfg["user"]["cell"]:
+        log.info(f"Admin mode via DTMF in surface  SID={CallSid}")
+        return await _admin_mode_response(request, CallSid, f"[DTMF: {Digits}]", cfg)
+
+    # Accumulate signals from this turn
+    if speech and CallSid in active_calls:
+        brief = _load_feature_brief()
+        new_signals = _scan_signals(speech, brief)
+        active_calls[CallSid]["signals"].extend(new_signals)
+        active_calls[CallSid]["transcript"].append(speech)
+
+    log.info(f"SurfaceResponse  SID={CallSid}  speech='{speech}'")
+
+    # Detect yes / no / ambiguous
+    speech_lower = speech.lower()
+
+    yes_signals = ["yes", "yeah", "sure", "absolutely", "definitely", "of course",
+                   "sounds good", "i'd like", "tell me more", "that sounds", "interested",
+                   "go ahead", "why not", "exactly", "that's it", "that's what"]
+    no_signals = ["no", "not really", "not interested", "don't need", "that's not",
+                  "no thanks", "pass", "nope", "not for me", "doesn't apply"]
+    ambiguous_signals = ["maybe", "i guess", "sort of", "it depends", "kind of",
+                         "possibly", "not sure", "what do you mean", "could be",
+                         "i don't know", "tell me", "explain"]
+
+    is_yes = any(s in speech_lower for s in yes_signals)
+    is_no = any(s in speech_lower for s in no_signals)
+    is_ambiguous = any(s in speech_lower for s in ambiguous_signals)
+
+    # YES — buying signal, go to close
+    if is_yes and not is_no:
+        if CallSid in active_calls:
+            last_feature = active_calls[CallSid]["features_declared"][-1] if active_calls[CallSid]["features_declared"] else "that"
+            active_calls[CallSid]["feature_responses"][last_feature] = "yes"
+            active_calls[CallSid]["phase"] = "close"
+        log.info(f"SurfaceResponse  SID={CallSid}  branch=YES → close")
+        extract_q = "What would that mean for you?"
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play(extract_q, base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/close-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/close-response</Redirect>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # AMBIGUOUS — extract the gap
+    if is_ambiguous and not is_no:
+        if CallSid in active_calls:
+            last_feature = active_calls[CallSid]["features_declared"][-1] if active_calls[CallSid]["features_declared"] else "that"
+            active_calls[CallSid]["feature_responses"][last_feature] = "ambiguous"
+        log.info(f"SurfaceResponse  SID={CallSid}  branch=AMBIGUOUS → clarify")
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("Tell me more about that.", base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/surface-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/surface-response</Redirect>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # NO — discovery, highest value
+    if CallSid in active_calls:
+        last_feature = active_calls[CallSid]["features_declared"][-1] if active_calls[CallSid]["features_declared"] else "that"
+        active_calls[CallSid]["feature_responses"][last_feature] = "no"
+    log.info(f"SurfaceResponse  SID={CallSid}  branch=NO → discover + next feature")
+
+    call = active_calls.get(CallSid, {})
+    brief = _load_feature_brief()
+    next_feature = _select_prospect_feature(call.get("signals", []), call.get("features_declared", []), brief)
+
+    if next_feature:
+        if CallSid in active_calls:
+            active_calls[CallSid]["features_declared"].append(next_feature["id"])
+        discover_text = (
+            f"If not that, what would interest you? "
+            f"Let me try another one — Phone Buddy can {next_feature['headline'].lower()}. "
+            f"{next_feature['hook']}"
+        )
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play(discover_text, base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/surface-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/surface-response</Redirect>
+</Response>"""
+    else:
+        # All features exhausted — withdrawal
+        return await _prospect_withdrawal(request, CallSid, cfg)
+
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/call/close-response")
+async def close_response(
+    request: Request,
+    CallSid: str = Form(default=""),
+    From: str = Form(default=""),
+    SpeechResult: str = Form(default=""),
+    Digits: str = Form(default=""),
+):
+    """
+    Close state machine.
+    First entry: ask "Do you want me to set it up?"
+    YES → collect name + callback number
+    NO  → privacy probe → objection handling → withdrawal
+    """
+    cfg = load_config()
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    speech = SpeechResult.strip()
+    speech_lower = speech.lower()
+
+    # DTMF safeword check
+    if Digits and _is_dtmf_safeword(Digits, cfg) and From == cfg["user"]["cell"]:
+        return await _admin_mode_response(request, CallSid, f"[DTMF: {Digits}]", cfg)
+
+    call = active_calls.get(CallSid, {})
+    close_attempts = call.get("close_attempts", 0)
+
+    if CallSid in active_calls:
+        active_calls[CallSid]["transcript"].append(speech)
+
+    log.info(f"CloseResponse  SID={CallSid}  attempt={close_attempts}  speech='{speech}'")
+
+    # First entry (no speech yet, redirected from surface) — ask the close question
+    if not speech and close_attempts == 0:
+        if CallSid in active_calls:
+            active_calls[CallSid]["close_attempts"] += 1
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("Do you want me to set it up?", base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/close-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/close-response</Redirect>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # YES — collect lead
+    yes_signals = ["yes", "yeah", "sure", "absolutely", "let's do it", "set it up",
+                   "go ahead", "sounds good", "definitely", "okay", "ok", "why not"]
+    if any(s in speech_lower for s in yes_signals):
+        log.info(f"CloseResponse  SID={CallSid}  branch=YES → lead capture")
+        if CallSid in active_calls:
+            active_calls[CallSid]["phase"] = "lead_capture"
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("Perfect. Give me your name and the best number to reach you. I'll make sure someone calls you personally.", base_url)}
+  <Gather input="speech" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="15" language="en-US">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/voicemail</Redirect>
+</Response>"""
+        if CallSid in active_calls:
+            active_calls[CallSid]["classification"] = "hot_lead"
+        return Response(content=twiml, media_type="application/xml")
+
+    # NO — start objection sequence
+    # First no → privacy probe
+    if close_attempts <= 1:
+        if CallSid in active_calls:
+            active_calls[CallSid]["close_attempts"] += 1
+        log.info(f"CloseResponse  SID={CallSid}  branch=NO → privacy probe")
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("Are you worried about privacy?", base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/close-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/close-response</Redirect>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # Privacy yes → THE FLIP
+    privacy_signals = ["yes", "yeah", "privacy", "my information", "data", "recording",
+                       "personal", "intrude", "surveillance", "watching", "listening", "concerned"]
+    if any(s in speech_lower for s in privacy_signals):
+        log.info(f"CloseResponse  SID={CallSid}  branch=PRIVACY_FLIP")
+        if CallSid in active_calls:
+            active_calls[CallSid]["close_attempts"] += 1
+        flip_text = (
+            "That's what I'm all about. "
+            "I want to give you the privacy you deserve — not intrude on it. "
+            "I built Phone Buddy because I hated having control of my own phone taken away from me. "
+            "Phone Buddy is on your side. "
+            "Do you want me to set it up?"
+        )
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play(flip_text, base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/close-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/close-response</Redirect>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # Name the objection — cost / time / trust
+    cost_signals = ["cost", "price", "how much", "pay", "expensive", "money", "charge", "free"]
+    time_signals = ["busy", "no time", "too much", "complicated", "too hard", "time", "later", "not now"]
+    trust_signals = ["trust", "not sure", "skeptical", "don't know you", "stranger", "how do i know", "prove"]
+
+    if any(s in speech_lower for s in cost_signals):
+        reply = "It's free to try. No card, no commitment. Do you want me to set it up?"
+    elif any(s in speech_lower for s in time_signals):
+        reply = "Five minutes. I handle the setup. Do you want me to set it up?"
+    elif any(s in speech_lower for s in trust_signals):
+        reply = "Tell me more — what would make you comfortable?"
+    else:
+        reply = "Help me out — tell me what's bothering you. Whatever it is, I don't want that for you either."
+
+    if CallSid in active_calls:
+        active_calls[CallSid]["close_attempts"] += 1
+
+    # After 3 close attempts — withdrawal
+    if active_calls.get(CallSid, {}).get("close_attempts", 0) >= 3:
+        return await _prospect_withdrawal(request, CallSid, cfg)
+
+    log.info(f"CloseResponse  SID={CallSid}  branch=OBJECTION  reply='{reply[:40]}'")
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play(reply, base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/close-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/close-response</Redirect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
 async def _take_voicemail(request: Request, call_sid: str, cfg: dict) -> Response:
     """After max classification attempts — take a message."""
     log.info(f"Taking voicemail  SID={call_sid}")
@@ -739,7 +1182,7 @@ async def _generate_followup(speech: str, transcript_so_far: list[str], cfg: dic
     Claude Haiku generates a single curious follow-up question based on what the caller said.
     Yield, collect, ask for more. Never terminate. Never mention price.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("NGROK_GATEWAY_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         return "That's interesting. Tell me more — what made you think of calling Nick today?"
 
@@ -757,9 +1200,10 @@ Generate ONE short, warm, curious follow-up question (1-2 sentences max) that:
 Reply with only the question itself, no preamble."""
 
     try:
+        llm_url = os.environ.get("LLM_BASE_URL", "https://api.anthropic.com/v1/messages")
         async with httpx.AsyncClient(timeout=4.0) as client:
             resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
+                llm_url,
                 headers={
                     "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
@@ -769,6 +1213,7 @@ Reply with only the question itself, no preamble."""
                     "model": "claude-haiku-4-5-20251001",
                     "max_tokens": 80,
                     "messages": [{"role": "user", "content": prompt}],
+                    "metadata": {"user_id": cfg.get("user", {}).get("cell", "unknown")},
                 },
             )
             return resp.json()["content"][0]["text"].strip()
@@ -788,7 +1233,7 @@ async def _precache_predictions(
     Asks Haiku to predict 5 likely caller replies and the ideal PB follow-up for each.
     Pre-fetches TTS for all 5 so next turn is instant on cache hit.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("NGROK_GATEWAY_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         return
 
@@ -802,9 +1247,10 @@ Reply with JSON only, no markdown:
 [{{"caller_says": "...", "pb_reply": "..."}}, ...]"""
 
     try:
+        llm_url = os.environ.get("LLM_BASE_URL", "https://api.anthropic.com/v1/messages")
         async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
+                llm_url,
                 headers={
                     "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
@@ -814,6 +1260,7 @@ Reply with JSON only, no markdown:
                     "model": "claude-haiku-4-5-20251001",
                     "max_tokens": 500,
                     "messages": [{"role": "user", "content": prompt}],
+                    "metadata": {"user_id": cfg.get("user", {}).get("cell", "unknown")},
                 },
             )
             text = resp.json()["content"][0]["text"].strip()
@@ -872,6 +1319,7 @@ async def engage_response(
     CallSid: str = Form(default=""),
     From: str = Form(default=""),
     SpeechResult: str = Form(default=""),
+    Digits: str = Form(default=""),
 ):
     """
     Caller responded to anything PB said.
@@ -881,6 +1329,11 @@ async def engage_response(
     """
     cfg = load_config()
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+
+    # DTMF safeword check — owner can escape to admin mode at any point in the conversation
+    if Digits and _is_dtmf_safeword(Digits, cfg) and From == cfg["user"]["cell"]:
+        log.info(f"Admin mode activated via DTMF in engage  SID={CallSid}")
+        return await _admin_mode_response(request, CallSid, f"[DTMF: {Digits}]", cfg)
     speech = SpeechResult.strip()
     speech_lower = speech.lower()
 
@@ -902,6 +1355,13 @@ async def engage_response(
     if wants_out:
         return await _take_voicemail(request, CallSid, cfg)
 
+    # Caller said yes AFTER the pitch — they're interested in PB. Enter the surface state machine.
+    if is_yes and already_pitched:
+        if CallSid in active_calls:
+            active_calls[CallSid]["phase"] = "surface"
+        log.info(f"EngageResponse  SID={CallSid}  pitched+yes → prospect surface path")
+        return await _surface_feature(request, CallSid, cfg)
+
     if is_yes and not already_pitched:
         if CallSid in active_calls:
             active_calls[CallSid]["pitched"] = True
@@ -909,8 +1369,8 @@ async def engage_response(
 <Response>
   {_play_filler("oh-yeah(affirmative).wav", base_url)}
   {_play("PhoneBuddy answers your calls in your own voice, screens out the noise, captures every lead, and lets you call back on your terms. May I get your name and the best way to follow up with you?", base_url)}
-  <Gather input="speech" action="{base_url}/call/engage-response"
-          speechTimeout="auto" timeout="10" language="en-US">
+  <Gather input="speech dtmf" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
     <Pause length="1"/>
   </Gather>
   <Redirect>{base_url}/call/voicemail</Redirect>
@@ -925,8 +1385,8 @@ async def engage_response(
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play(cached_reply, base_url)}
-  <Gather input="speech" action="{base_url}/call/engage-response"
-          speechTimeout="auto" timeout="10" language="en-US">
+  <Gather input="speech dtmf" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
     <Pause length="1"/>
   </Gather>
   <Redirect>{base_url}/call/voicemail</Redirect>
@@ -971,13 +1431,13 @@ async def engage_followup(
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play(followup, base_url)}
-  <Gather input="speech" action="{base_url}/call/engage-response"
-          speechTimeout="auto" timeout="10" language="en-US">
+  <Gather input="speech dtmf" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
     <Pause length="1"/>
   </Gather>
   {_play_filler("im-listening.wav", base_url)}
-  <Gather input="speech" action="{base_url}/call/engage-response"
-          speechTimeout="auto" timeout="8" language="en-US">
+  <Gather input="speech dtmf" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="8" language="en-US" finishOnKey="#">
     <Pause length="1"/>
   </Gather>
   <Redirect>{base_url}/call/voicemail</Redirect>
@@ -1061,7 +1521,8 @@ async def _admin_mode_response(request: Request, call_sid: str,
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play(summary, base_url)}
-  <Gather input="speech" action="{base_url}/call/admin-query" speechTimeout="5" timeout="10">
+  <Gather input="speech dtmf" action="{base_url}/call/admin-query"
+          speechTimeout="5" timeout="10" finishOnKey="#">
     <Pause length="1"/>
   </Gather>
   <Hangup/>
@@ -1133,9 +1594,9 @@ async def _classify_with_claude(
     Context from the R step (history, prior suspicion) is injected into the prompt.
     Returns: (classification, confidence, suspicion_delta)
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("NGROK_GATEWAY_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        log.warning("ANTHROPIC_API_KEY not set — defaulting to unknown")
+        log.warning("No LLM API key set — defaulting to unknown")
         return "unknown", 0.5, 0.0
 
     # Build history context string for the prompt
@@ -1158,11 +1619,13 @@ Classify into exactly one of:
 - contact: personal or business contact the owner knows
 - medical: doctor, hospital, pharmacy, insurance (health-related callback)
 - professional: attorney, accountant, government agency, legitimate business
+- prospect: caller is asking about PhoneBuddy as a product (pricing, features, how it works, sign up, "is it free", "what does it do", "how do I get it")
 - solicitation: charity, sales pitch, political, survey, marketing
 - scam: fraud attempt, fake prize, IRS impersonation, tech support scam
 - unknown: cannot determine from available information
 
 Rules:
+- If the caller mentions PhoneBuddy, phone buddy, the app, or asks about pricing/features/setup, classify as prospect.
 - If call history shows prior scam/solicitation classifications, weight suspicion_delta higher.
 - If transcript is empty or garbled, return unknown with low confidence.
 - suspicion_delta range: -0.5 (clearly legitimate) to +0.5 (clearly malicious).
@@ -1171,9 +1634,10 @@ Respond with JSON only, no markdown:
 {{"classification": "...", "confidence": 0.0-1.0, "suspicion_delta": -0.5 to +0.5, "reasoning": "one sentence"}}"""
 
     try:
+        llm_url = os.environ.get("LLM_BASE_URL", "https://api.anthropic.com/v1/messages")
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
+                llm_url,
                 headers={
                     "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
@@ -1185,6 +1649,7 @@ Respond with JSON only, no markdown:
                     ),
                     "max_tokens": 150,
                     "messages": [{"role": "user", "content": prompt}],
+                    "metadata": {"user_id": cfg.get("user", {}).get("cell", "unknown")},
                 },
             )
             data = resp.json()

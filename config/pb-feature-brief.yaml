@@ -1,0 +1,274 @@
+# PhoneBuddy — Feature Brief (Living Document)
+# Machine-readable sales ammunition for in-call feature surfacing.
+#
+# How this works:
+#   1. Caller speech is scanned for signal keywords (same pattern as _select_chain)
+#   2. Matched signals increment feature relevance scores in active_calls state
+#   3. When a natural opening arises, PB surfaces the highest-scoring feature
+#   4. Always ends with an engagement question — never a close
+#   5. Caller's response feeds back into signal state (Bayesian update)
+#
+# Update this file whenever you learn something new from a prospect conversation.
+# Each feature should have at least one real-caller story attached when known.
+
+meta:
+  version: "0.1.0"
+  last_updated: "2026-03-31"
+  update_trigger: "after any prospect conversation that surfaces a new pain point"
+  max_features_per_call: 2   # don't pitch — mention one, maybe two if caller is warm
+
+# ── Features ─────────────────────────────────────────────────────────────────
+# Fields:
+#   id          — machine key, used in signal scoring and post-call report
+#   headline    — what PB says when surfacing this feature (keep under 12 words)
+#   hook        — the "would it make your life better..." opener
+#   engagement  — always ends with an open question, never a yes/no close
+#   signals     — list of signal IDs that increase this feature's relevance score
+#   weight      — base relevance weight (0.0–1.0); runtime score = weight × signal_hits
+#   caller_story — optional: real prospect quote or scenario that originated this feature
+
+features:
+
+  - id: never_miss_call
+    headline: "Every call gets answered — even when you can't"
+    hook: "Would it make your life better to never miss a call?"
+    engagement: "What kind of calls do you most hate missing?"
+    signals: [missed_call, not_home, busy, expecting_call, doctor_call]
+    weight: 0.9
+    caller_story: null  # fill in after first real caller mentions it
+
+  - id: hold_proxy
+    headline: "PB waits on hold so you don't have to"
+    hook: "How much time have you spent listening to hold music this month?"
+    engagement: "Is that something you deal with a lot — support lines, insurance, that kind of thing?"
+    signals: [hold_music, support_call, customer_service, complaint, insurance]
+    weight: 0.8
+    caller_story: null
+
+  - id: scam_screener
+    headline: "Scammers never make it through"
+    hook: "Would it make your life better if every scam call just... disappeared?"
+    engagement: "Are you or someone you care about getting a lot of those right now?"
+    signals: [scam, fraud, suspicious, robocall, spam, worried_about_family]
+    weight: 0.9
+    caller_story: null
+
+  - id: elder_protection
+    headline: "Protects the people you love who answer everything"
+    hook: "Does someone in your family trust every caller — maybe more than they should?"
+    engagement: "Who are you thinking about — a parent, grandparent, someone else?"
+    signals: [grandma, grandpa, parent, elderly, senior, mom, dad, vulnerable]
+    weight: 0.85
+    caller_story: null
+
+  - id: credit_guard
+    headline: "PB never gives out your credit card or SSN — ever"
+    hook: "Have you ever been mid-call and worried they were fishing for your card number?"
+    engagement: "Has that actually happened to you, or is it more of a worry?"
+    signals: [credit_card, social_security, ssn, identity, bank, financial, payment]
+    weight: 0.9
+    caller_story: null
+
+  - id: translation
+    headline: "Understands callers you can't — any language, any accent"
+    hook: "Do you ever get calls where you honestly can't tell what they're saying?"
+    engagement: "Is it more accent, language, or call quality that's the problem?"
+    signals: [accent, language, chinese, foreign, cant_understand, unclear, translation]
+    weight: 0.7
+    caller_story: "Chinese robocalls — what ARE they saying?"
+
+  - id: nuisance_engagement
+    headline: "Keeps junk callers busy so real calls get through faster"
+    hook: "What if the spam callers spent five minutes talking to PB instead of you?"
+    engagement: "Would you feel better knowing their time is being wasted instead of yours?"
+    signals: [spam, annoying, telemarketer, junk, waste_of_time, too_many_calls]
+    weight: 0.75
+    caller_story: null
+
+  - id: whitelist_blacklist
+    headline: "Your list, your rules — friends through instantly, blocklist never rings"
+    hook: "Would it help to have certain numbers always go through and others never ring you?"
+    engagement: "Who's on your must-always-get-through list right now?"
+    signals: [blacklist, block, whitelist, always_through, family, vip_caller]
+    weight: 0.8
+    caller_story: null
+
+  - id: auto_callback
+    headline: "Missed a call? PB calls them back when you're ready"
+    hook: "Have you ever seen a missed call and had no idea if you should call back?"
+    engagement: "Does that happen with important numbers — or more with unknowns?"
+    signals: [missed_call, call_back, return_call, unknown_number, voicemail_missed]
+    weight: 0.7
+    caller_story: null
+
+  - id: caller_recognition
+    headline: "Knows it's your doctor even when the number doesn't match"
+    hook: "Does your doctor's office ever call from a number you don't recognize?"
+    engagement: "Are there other places — medical, legal, school — where that's a problem?"
+    signals: [doctor, hospital, medical, school, lawyer, office_number, recognize]
+    weight: 0.75
+    caller_story: null
+
+  - id: intent_screening
+    headline: "Knows why they're calling before you pick up"
+    hook: "Would you answer more calls if you knew what they were about first?"
+    engagement: "What's the call you most want to screen before deciding to pick up?"
+    signals: [unknown_number, screening, purpose_of_call, screening_calls, privacy]
+    weight: 0.85
+    caller_story: null
+
+  - id: call_log
+    headline: "Full log of every call — who, when, what was said"
+    hook: "Do you ever wish you had a record of a call you didn't expect to need?"
+    engagement: "Is it more about remembering details, or proving what was said?"
+    signals: [record, log, transcript, remember, proof, agreement, commitment, legal]
+    weight: 0.8
+    caller_story: null
+
+  - id: call_notes
+    headline: "Structured summary of every call — commitments, prices, agreements"
+    hook: "Have you ever lost track of something important that was said on a call?"
+    engagement: "Is it more business calls or personal ones where that stings?"
+    signals: [agreement, commitment, price, negotiation, contract, promise, verbal, record]
+    weight: 0.85
+    caller_story: null
+
+  - id: negotiation_coach
+    headline: "Helps you negotiate a better price before you say yes"
+    hook: "Would it help to have a second opinion while you're still on the call?"
+    engagement: "What kind of negotiation — vendor, service, sale, something else?"
+    signals: [price, negotiate, offer, quote, discount, better_deal, sales_call, contract]
+    weight: 0.65
+    caller_story: null
+
+  - id: call_back_hold
+    headline: "Holds your place and alerts you when a real person picks up"
+    hook: "What if PB waited on hold and called you the moment a human answered?"
+    engagement: "How much time would that save you in a typical week?"
+    signals: [on_hold, waiting, hold_music, support_line, queue, call_center]
+    weight: 0.80
+    caller_story: null
+
+  - id: family_vip_ring
+    headline: "Family and friends ring through on the first ring — always"
+    hook: "Would it make your life better if the people you care about always got through?"
+    engagement: "Who's on that shortlist for you right now?"
+    signals: [family, friends, kids, spouse, partner, loved_ones, important_people]
+    weight: 0.85
+    caller_story: null
+
+  - id: geo_rapport
+    headline: "Knows where callers are calling from"
+    hook: "I can usually tell roughly where a call is coming from — want me to guess?"
+    engagement: "Are you calling from [geo_hint] or somewhere else?"
+    signals: []  # surfaced proactively from Twilio metadata, not signal-driven
+    weight: 0.0  # always triggered by Twilio FromCity/FromState, not caller words
+    caller_story: "Nick always asks — makes the call feel like a real conversation"
+
+# ── Signal Taxonomy ───────────────────────────────────────────────────────────
+# Each signal has keywords that trigger it during real-time speech scanning.
+# Extend this list as you hear new patterns from callers.
+# Signals accumulate within the call session — they are not reset per turn.
+
+signals:
+  - id: missed_call
+    keywords: ["missed", "didn't get to the phone", "couldn't answer", "not home", "didn't pick up"]
+
+  - id: expecting_call
+    keywords: ["waiting for", "expecting", "supposed to call", "they were going to call"]
+
+  - id: doctor_call
+    keywords: ["doctor", "physician", "clinic", "hospital", "medical office", "appointment"]
+
+  - id: hold_music
+    keywords: ["hold", "on hold", "hold music", "waiting on hold", "holding", "queue"]
+
+  - id: support_call
+    keywords: ["support", "customer service", "tech support", "help line", "800 number", "call center"]
+
+  - id: insurance
+    keywords: ["insurance", "health plan", "claim", "coverage", "deductible", "kaiser", "united"]
+
+  - id: complaint
+    keywords: ["complaint", "problem with", "issue with", "frustrated", "angry about", "dispute"]
+
+  - id: scam
+    keywords: ["scam", "scammer", "fraud", "fake", "phishing", "social security scam", "irs scam"]
+
+  - id: robocall
+    keywords: ["robocall", "robot", "automated", "recorded message", "press 1"]
+
+  - id: spam
+    keywords: ["spam", "junk", "telemarketer", "solicitation", "unwanted", "marketing call"]
+
+  - id: worried_about_family
+    keywords: ["worried about", "concerned about", "my mom", "my dad", "my grandma", "my kids"]
+
+  - id: elderly
+    keywords: ["elderly", "senior", "aging", "older", "retirement"]
+
+  - id: grandma
+    keywords: ["grandma", "grandmother", "grandmom", "nana", "gran"]
+
+  - id: grandpa
+    keywords: ["grandpa", "grandfather", "granddad", "grandad", "pop", "pops"]
+
+  - id: parent
+    keywords: ["my mom", "my dad", "my mother", "my father", "my parents"]
+
+  - id: vulnerable
+    keywords: ["trusts everyone", "answers everything", "picks up every call", "too trusting"]
+
+  - id: credit_card
+    keywords: ["credit card", "card number", "visa", "mastercard", "payment"]
+
+  - id: social_security
+    keywords: ["social security", "ssn", "social security number", "ss number"]
+
+  - id: identity
+    keywords: ["identity", "personal information", "give out my", "identity theft"]
+
+  - id: bank
+    keywords: ["bank", "account number", "routing number", "wire transfer", "zelle", "venmo"]
+
+  - id: accent
+    keywords: ["accent", "hard to understand", "can't understand", "thick accent"]
+
+  - id: language
+    keywords: ["language", "english", "spanish", "chinese", "mandarin", "hindi", "don't speak"]
+
+  - id: chinese
+    keywords: ["chinese", "mandarin", "what are they saying", "no idea what", "foreign language"]
+
+  - id: unknown_number
+    keywords: ["don't recognize", "unknown number", "no idea who", "strange number", "never seen"]
+
+  - id: agreement
+    keywords: ["agreed", "they said", "promised", "told me", "committed", "verbal agreement"]
+
+  - id: commitment
+    keywords: ["commitment", "agreed to", "supposed to", "they said they would"]
+
+  - id: price
+    keywords: ["price", "cost", "quote", "estimate", "how much", "charge"]
+
+  - id: negotiation
+    keywords: ["negotiate", "better price", "discount", "lower", "deal", "counter offer"]
+
+  - id: contract
+    keywords: ["contract", "agreement", "signed", "terms", "fine print"]
+
+  - id: record
+    keywords: ["record", "transcript", "remember", "forgot", "can't remember", "written down"]
+
+  - id: family
+    keywords: ["family", "my kids", "my wife", "my husband", "my spouse", "my partner"]
+
+  - id: friends
+    keywords: ["friends", "close friends", "best friend", "buddy", "colleague"]
+
+  - id: blacklist
+    keywords: ["block", "blocked", "blacklist", "never want to hear from", "stop calling"]
+
+  - id: whitelist
+    keywords: ["always get through", "always pick up for", "vip", "important callers"]

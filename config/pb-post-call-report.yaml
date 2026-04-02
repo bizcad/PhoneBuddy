@@ -1,0 +1,154 @@
+# PhoneBuddy — Post-Call Report Schema (Living Document)
+# Defines what PB captures and structures after every call.
+#
+# Legal note: Call summaries and structured notes are legal in all US states
+# as long as at minimum one party to the call consents (federal one-party rule).
+# All-party consent states (CA, FL, IL, etc.) require disclosure — PB's opening
+# greeting ("this call may be recorded") satisfies this requirement.
+# A structured report of the call's substance is NEVER illegal regardless of
+# recording laws, because it is PB's own contemporaneous notes, not a recording.
+#
+# Design goals:
+#   1. Every call gets a report — even short ones
+#   2. Report is immediately useful to Nick without reading the transcript
+#   3. Caller opinions and feature appetite are captured as product intelligence
+#   4. Commitments, prices, and agreements are extracted and flagged
+#   5. Report stored in SQLite call_history.notes (JSON blob)
+
+meta:
+  version: "0.1.0"
+  last_updated: "2026-03-31"
+  storage: "call_history.notes (JSON)"
+  max_summary_words: 50
+  generated_by: "claude-haiku-4-5 (post-call, not real-time)"
+
+# ── Report Schema ─────────────────────────────────────────────────────────────
+# This defines the JSON structure written to call_history.notes at call end.
+# All fields are optional — PB fills what it can from the transcript.
+
+report_schema:
+
+  # --- Identity & Context ---
+  call_id: string              # Twilio CallSid
+  caller_number: string        # E.164
+  caller_name: string | null   # from contacts DB, or extracted from conversation
+  timestamp_start: ISO8601
+  timestamp_end: ISO8601
+  duration_seconds: integer
+  geo:
+    twilio_city: string | null
+    twilio_state: string | null
+    twilio_country: string | null
+    caller_stated_location: string | null  # what they said vs what Twilio reported
+
+  # --- Call Purpose ---
+  purpose_summary: string      # one sentence: why did they call?
+  call_category:               # enum
+    - personal_inquiry
+    - prospect_demo
+    - support_request
+    - family_check_in
+    - scam_attempt
+    - solicitation
+    - wrong_number
+    - unknown
+
+  # --- Substance Extraction ---
+  # PB extracts these from transcript automatically — all are optional
+  substance:
+    commitments:               # things promised by either party
+      - party: "caller" | "phonebuddy" | "nick"
+        text: string           # verbatim or paraphrased
+        flagged: boolean       # true = requires follow-up
+    prices_mentioned:
+      - item: string
+        amount: string         # as stated ("$49/month", "around fifty bucks")
+    agreements:
+      - text: string
+        context: string        # what led to the agreement
+    key_facts:                 # anything worth remembering about this caller
+      - text: string
+
+  # --- Product Intelligence ---
+  # Filled only when caller engages with the discovery flow
+  product_intel:
+    signals_detected: [string]           # list of signal IDs that fired
+    features_surfaced: [string]          # feature IDs mentioned to caller
+    feature_responses:
+      - feature_id: string
+        sentiment: "enthusiastic" | "interested" | "neutral" | "skeptical" | "negative"
+        caller_quote: string | null      # exact words if memorable
+    discovery_probes_used: [string]      # probe IDs that were asked
+    intent_category: string             # from response_tags.intent_category
+    would_use_phonebuddy:               # inferred from engagement
+      score: float                      # 0.0–1.0
+      reasoning: string | null
+
+  # --- Caller Verbatim ---
+  # Best quotes from the call — for product development
+  memorable_quotes: [string]            # things caller said worth keeping
+  feature_requests: [string]            # things they asked for that don't exist yet
+  objections: [string]                  # reasons they gave for not wanting PB
+
+  # --- Quality & Metadata ---
+  call_quality: "good" | "fair" | "poor"
+  transcript_words: integer
+  classification: string               # from classification pipeline
+  suspicion_score: float
+  outcome: string                      # from routing logic
+  haiku_tokens_used: integer | null    # cost tracking
+
+# ── Report Prompt Template ────────────────────────────────────────────────────
+# This is the system prompt fragment sent to Haiku at call end to generate
+# the structured report. The full transcript is appended as user content.
+#
+# The prompt asks for JSON matching report_schema above.
+
+report_generation_prompt: |
+  You are PhoneBuddy, a personal phone assistant.
+  A call just ended. Based on the transcript below, generate a structured call report.
+
+  Return valid JSON matching this exact schema — use null for fields you cannot determine:
+  {
+    "purpose_summary": "<one sentence>",
+    "call_category": "<enum value>",
+    "substance": {
+      "commitments": [],
+      "prices_mentioned": [],
+      "agreements": [],
+      "key_facts": []
+    },
+    "product_intel": {
+      "signals_detected": [],
+      "features_surfaced": [],
+      "feature_responses": [],
+      "intent_category": null,
+      "would_use_phonebuddy": {"score": null, "reasoning": null}
+    },
+    "memorable_quotes": [],
+    "feature_requests": [],
+    "objections": [],
+    "call_quality": null
+  }
+
+  Rules:
+  - purpose_summary must be one sentence under 20 words
+  - Only include commitments, prices, and agreements that were actually stated
+  - memorable_quotes should be things worth reading — skip pleasantries
+  - feature_requests are things the caller wished PB could do that it apparently cannot
+  - Be conservative: null > hallucinated data
+
+# ── Display Format ─────────────────────────────────────────────────────────────
+# When Nick views a call report, this is the human-readable rendering order.
+
+display_order:
+  - call_identity        # number, name, time, duration, geo
+  - purpose_summary      # one sentence at the top
+  - commitments          # flagged first — most actionable
+  - prices_mentioned
+  - agreements
+  - key_facts
+  - product_intel        # feature appetite — secondary
+  - memorable_quotes
+  - feature_requests     # most valuable for product
+  - objections

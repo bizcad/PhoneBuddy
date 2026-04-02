@@ -1,0 +1,144 @@
+# PhoneBuddy — Discovery Flow (Living Document)
+# Conversation probes used during the "product curiosity" window of a call.
+#
+# When to use:
+#   - After the caller's purpose has been established and they are still engaged
+#   - When the caller asks "what else can you do?" or similar
+#   - During the PhoneBuddy demo / prospect call flow
+#
+# Rule: never more than 2 probes per call. Caller's time is the product.
+# Rule: always end with an engagement question — validate, don't close.
+# Rule: their answer is the product. Log it.
+
+meta:
+  version: "0.1.0"
+  last_updated: "2026-03-31"
+  max_probes_per_call: 2
+
+# ── Opening Moves ─────────────────────────────────────────────────────────────
+# One of these opens the discovery window — whichever feels most natural after
+# the caller's first answer. Use at most one.
+
+opening_probes:
+  - id: open_wants
+    text: "What would you want a phone assistant to do for you?"
+    engagement: "Is there something specific that made you pick up the phone today?"
+    signals_to_tag: []  # open-ended — listen and tag from response
+
+  - id: open_phone_life
+    text: "How would you describe your relationship with your phone right now?"
+    engagement: "Is it more that you get too many calls, or that you miss the ones you want?"
+    signals_to_tag: [too_many_calls, missed_call]
+
+  - id: open_control
+    text: "If you could take back control over who gets through to you — what would that look like?"
+    engagement: "What's the call you most wish you could block, and what's the one you never want to miss?"
+    signals_to_tag: [blacklist, whitelist, missed_call, spam]
+
+# ── Targeted Probes ───────────────────────────────────────────────────────────
+# Used after the opening has surfaced a signal. Probe deeper into that specific
+# pain before surfacing a feature.
+
+targeted_probes:
+  - id: probe_missed_calls
+    trigger_signals: [missed_call, expecting_call]
+    text: "What kind of calls do you most hate missing?"
+    engagement: "Would it help if those calls always got through — even if your phone was off?"
+
+  - id: probe_scam_worry
+    trigger_signals: [scam, spam, robocall, worried_about_family]
+    text: "Is it more that you're worried for yourself, or for someone else in your life?"
+    engagement: "Who are you thinking about?"
+
+  - id: probe_elder
+    trigger_signals: [grandma, grandpa, parent, elderly, vulnerable]
+    text: "Does [person] tend to answer every call, or are they actually pretty cautious?"
+    engagement: "What's the call you're most worried they'd fall for?"
+
+  - id: probe_hold
+    trigger_signals: [hold_music, support_call, insurance, complaint]
+    text: "How many times this month have you had to sit on hold for something?"
+    engagement: "What's the worst one — insurance, tech support, something else?"
+
+  - id: probe_record
+    trigger_signals: [agreement, commitment, price, contract, record]
+    text: "Has there ever been a time where what was agreed on a call didn't happen — and you had no record?"
+    engagement: "Was it a vendor, a service provider, or something else?"
+
+  - id: probe_unknown_numbers
+    trigger_signals: [unknown_number, intent_screening, doctor_call]
+    text: "Do you answer numbers you don't recognize, or do you usually let them go to voicemail?"
+    engagement: "What makes you decide to pick up or not?"
+
+  - id: probe_negotiation
+    trigger_signals: [price, negotiation, contract, sales_call]
+    text: "When you're negotiating something on a call — do you feel like you have enough information?"
+    engagement: "Is it more about the price, the terms, or just not knowing if it's a good deal?"
+
+# ── Geo Opener ────────────────────────────────────────────────────────────────
+# Triggered at the start of any call where Twilio provides location metadata.
+# This is a rapport-builder, not a feature probe. Always use it first.
+# If Twilio has no geo, use the fallback.
+
+geo_opener:
+  with_geo:
+    text: "This call is coming in from {city}, {state} — is that right?"
+    fallback_if_wrong: "No worries — where are you calling from?"
+    engagement: "I'm out in Orange County — what's it like there today?"
+  without_geo:
+    text: "I'm always curious — where are you calling from?"
+    engagement: "Nice. I'm out in Orange County, California."
+
+  # Call quality note — optional, use if STT confidence is low or audio is degraded
+  quality_note:
+    text: "The call quality is {quality} on my end — can you hear me okay?"
+    quality_values:
+      good: "crystal clear"
+      fair: "pretty decent"
+      poor: "a little rough"
+
+# ── Engagement Closers ────────────────────────────────────────────────────────
+# These are always appended to any feature surface or probe response.
+# Rotate through them — don't use the same one twice in a call.
+
+engagement_closers:
+  - "Does that sound like something that would actually help you?"
+  - "Is that close to what you're looking for?"
+  - "Would that make your day any easier?"
+  - "Does that ring true to what you deal with?"
+  - "Is that the kind of thing you'd use, or am I off base?"
+  - "What would make that even more useful for you?"
+  - "Would you want that, or is there a version of it that would work better?"
+
+# ── Data Collection Tags ──────────────────────────────────────────────────────
+# Every caller response during a probe should be tagged and saved.
+# These tags feed the post-call report and long-term product analytics.
+
+response_tags:
+  sentiment:
+    - enthusiastic    # "Yes! That's exactly what I need"
+    - interested      # engaged but measured
+    - neutral         # polite but no signal
+    - skeptical       # "I don't know if that would work"
+    - negative        # "I wouldn't use that"
+
+  intent_category:
+    - personal_protection
+    - elder_care
+    - business_use
+    - scam_defense
+    - record_keeping
+    - productivity
+    - just_curious
+
+  feature_appetite:        # which feature they most respond to
+    - never_miss_call
+    - hold_proxy
+    - scam_screener
+    - elder_protection
+    - call_notes
+    - translation
+    - intent_screening
+    - negotiation_coach
+    - family_vip_ring
+    - whitelist_blacklist

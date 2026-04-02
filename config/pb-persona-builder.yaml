@@ -1,0 +1,314 @@
+# PhoneBuddy — Persona Builder
+# Two uses:
+#   1. Conversation guide for the Sales Engineer (Ted) onboarding call
+#   2. Output schema: the customer's PB configuration template
+#
+# Design principle: bounded creativity.
+#   Give them real choices, not a blank canvas.
+#   Every question has a set of anchors — directions they can go.
+#   Open-ended follow-ups are allowed, but PB steers back to what can be built.
+#
+# The Sales Engineer (Ted) runs this as a conversation, not a form.
+# Questions are asked naturally, in order, with generous space between them.
+# The output is a filled persona template that provisions their PB.
+#
+# See pb-sales-engineer.yaml for Ted's full persona and provisioning skills.
+
+meta:
+  version: "0.1.0"
+  last_updated: "2026-03-31"
+  used_by: "pb-sales-engineer (Ted) during customer onboarding call"
+  output: "customer PB configuration template (YAML, stored per-customer)"
+  max_questions_per_call: 8     # keep it conversational, not exhaustive
+  tone: "warm expert — Ted is a sales engineer, not a salesperson"
+
+# ── Ted's Opening ─────────────────────────────────────────────────────────────
+
+opening:
+  ted_intro: >
+    "Hi, this is Ted — I'm a Phone Buddy setup specialist.
+     {caller_name or 'I'} heard you were interested in getting your own PB set up.
+     I have everything from your earlier call, so we don't have to start from scratch.
+     This should take about ten minutes — and by the end, you'll know exactly
+     what your PB will sound like and what it'll do for you.
+     Sound good?"
+
+  reference_demo_call: >
+    "I saw you mentioned [top signal from demo call] when you called before.
+     That's actually going to shape how we set yours up — let me walk you through it."
+
+  if_no_demo_call: >
+    "No worries — let's start from the top. Tell me a little about what made
+     you want a phone assistant in the first place."
+
+# ── Question Bank ─────────────────────────────────────────────────────────────
+# Questions are asked in order, but Ted can skip or reorder based on what
+# was already surfaced during the demo call.
+# Each question has: anchors (bounded choices), open_follow_up, and config_output.
+
+questions:
+
+  - id: q_primary_job
+    number: 1
+    question: "What's the number one job you want your PB to do?"
+    ted_framing: >
+      "There are a few ways people use it — some want a screener,
+       some want a recorder, some just want the scam calls to stop.
+       What would make the biggest difference for you right away?"
+    anchors:
+      - label: "Screen unknown callers before they reach me"
+        maps_to: intent.primary = screening
+      - label: "Make sure I never miss an important call"
+        maps_to: intent.primary = never_miss
+      - label: "Protect someone else in my life"
+        maps_to: intent.primary = elder_protection
+      - label: "Keep a record of what happens on calls"
+        maps_to: intent.primary = record_keeping
+      - label: "Handle my business calls professionally"
+        maps_to: intent.primary = business_receptionist
+      - label: "Stop the junk calls"
+        maps_to: intent.primary = spam_defense
+    open_follow_up: "Tell me more about that — what does that situation look like for you?"
+    config_output: "persona.intent.primary"
+    required: true
+
+  - id: q_voice_feel
+    number: 2
+    question: "What do you want callers to feel when they reach your PB?"
+    ted_framing: >
+      "Think about someone calling you for the first time.
+       What impression do you want them to walk away with?"
+    anchors:
+      - label: "Professional — like reaching a real office"
+        maps_to: voice.tone = professional
+      - label: "Warm and friendly — approachable"
+        maps_to: voice.tone = warm
+      - label: "Efficient — get to the point fast"
+        maps_to: voice.tone = efficient
+      - label: "Protective — serious, not messing around"
+        maps_to: voice.tone = protective
+      - label: "Playful — a little personality"
+        maps_to: voice.tone = playful
+    open_follow_up: "Is there a person — real or fictional — whose phone manner you'd want to match?"
+    config_output: "persona.voice.tone"
+    required: true
+    note: >
+      Their answer to the fictional person question is gold — it often reveals
+      more than the anchors. Log the verbatim quote.
+
+  - id: q_pb_name
+    number: 3
+    question: "What should your PB call itself?"
+    ted_framing: >
+      "Your PB needs a name for when it answers calls.
+       Some people use their own name ('You've reached Sarah's phone'),
+       some give it a different name, some keep it neutral ('You've reached this number').
+       What works for you?"
+    anchors:
+      - label: "Use my name — make it sound like my personal assistant"
+        maps_to: persona.name = owner_name_possessive
+      - label: "Give it a different name — it should feel like a separate entity"
+        maps_to: persona.name = custom_name
+      - label: "Keep it neutral — don't give it a name"
+        maps_to: persona.name = neutral
+    open_follow_up: "If it had its own name, what would feel right?"
+    config_output: "persona.name"
+    required: true
+
+  - id: q_transparency
+    number: 4
+    question: "Should callers know they're talking to an AI?"
+    ted_framing: >
+      "This is one of the bigger choices. Some customers want full transparency —
+       PB says upfront it's an assistant. Others want callers to just experience it
+       as a professional answering service without labeling it.
+       Either way it's legal — but the right answer depends on who's calling you."
+    anchors:
+      - label: "Be upfront — say it's an AI assistant"
+        maps_to: persona.transparency = disclosed
+      - label: "Present as a professional answering service — don't label it"
+        maps_to: persona.transparency = answering_service
+      - label: "Use my judgment — be honest if directly asked"
+        maps_to: persona.transparency = honest_if_asked
+    config_output: "persona.transparency"
+    required: true
+    legal_note: >
+      FTC and most state laws require that AI not deny being AI if directly and
+      sincerely asked. The 'honest_if_asked' option satisfies this in all US states.
+      California SB-1001 (2019) prohibits AI impersonating humans in commercial
+      contexts without disclosure. Always apply honest_if_asked at minimum.
+
+  - id: q_vip_callers
+    number: 5
+    question: "Who always gets through — no screening, first ring?"
+    ted_framing: >
+      "We call these your VIP callers. Family, doctor, your boss, whoever.
+       They ring through instantly. Everyone else gets the full experience.
+       Who's on that shortlist?"
+    anchors: null  # open-ended — they tell you who matters
+    open_follow_up:
+      - "Are there any numbers you'd want to block completely?"
+      - "Anyone you'd want routed to voicemail automatically, no matter what?"
+    config_output:
+      vip_list: "contacts[].tags = ['vip']"
+      blocklist: "contacts[].tags = ['block']"
+      voicemail_only: "contacts[].tags = ['voicemail']"
+    required: false
+    note: >
+      This is often the most emotionally resonant question.
+       When they say 'my daughter' or 'my cardiologist,' log the verbatim.
+       That's the moment they start owning their PB.
+
+  - id: q_guard_rails
+    number: 6
+    question: "What should your PB never do — no matter what a caller says?"
+    ted_framing: >
+      "There are a few things every PB has locked by default — it won't give
+       out your social security number, credit card, or bank info, ever.
+       But beyond those, are there things specific to your situation?"
+    anchors:
+      - label: "Never agree to a purchase without checking with me first"
+        maps_to: guardrails.no_purchase_agreement = true
+      - label: "Never give out my home address"
+        maps_to: guardrails.no_home_address = true
+      - label: "Never give out my schedule"
+        maps_to: guardrails.no_schedule = true
+      - label: "Never discuss my medical information"
+        maps_to: guardrails.no_medical = true
+      - label: "Never confirm or deny whether I'm home"
+        maps_to: guardrails.no_presence_confirm = true
+    open_follow_up: "Is there anything specific to your work or situation I should know about?"
+    config_output: "persona.guardrails"
+    required: false
+    defaults_always_on:
+      - "Never provide SSN, credit card, bank account, or routing numbers"
+      - "Never deny being an AI if directly and sincerely asked"
+      - "Never make irreversible commitments (purchases, legal agreements)"
+
+  - id: q_call_recording
+    number: 7
+    question: "Do you want calls recorded and transcribed?"
+    ted_framing: >
+      "PB can keep a full log of every call — who called, when, what was said,
+       and a structured summary of any commitments or agreements.
+       You can turn on full recording, summaries only, or keep it minimal.
+       This is especially useful if you deal with contracts, vendors, or anyone
+       you might need to follow up with later."
+    anchors:
+      - label: "Full transcript + structured summary — I want the whole record"
+        maps_to: recording.mode = full
+      - label: "Structured summary only — who called and what was agreed"
+        maps_to: recording.mode = summary_only
+      - label: "Just the log — who called and when"
+        maps_to: recording.mode = log_only
+      - label: "Nothing — I prefer not to record"
+        maps_to: recording.mode = none
+    config_output: "persona.recording.mode"
+    required: false
+    legal_note: >
+      PB plays a disclosure notice at the start of every call when recording
+      is enabled. This satisfies all-party consent requirements in CA, FL, IL,
+      WA, and other two-party consent states.
+
+  - id: q_escalation
+    number: 8
+    question: "When should PB interrupt you versus handle it on its own?"
+    ted_framing: >
+      "Most of the time, PB handles everything without bothering you.
+       But sometimes a call needs a real decision — your doctor saying something urgent,
+       a vendor with a deadline, someone who insists on speaking to you directly.
+       How do you want PB to handle those?"
+    anchors:
+      - label: "Text me a summary and let me decide if I call back"
+        maps_to: escalation.mode = text_summary
+      - label: "Call me directly if it seems urgent"
+        maps_to: escalation.mode = direct_interrupt
+      - label: "Have PB ask them to call back later"
+        maps_to: escalation.mode = schedule_callback
+      - label: "Handle it — I'll review the log later"
+        maps_to: escalation.mode = fully_autonomous
+    config_output: "persona.escalation.mode"
+    required: false
+
+# ── Output Template Schema ────────────────────────────────────────────────────
+# The filled schema Ted writes at the end of the onboarding call.
+# This is what the Sales Engineer's PPA submits to provision the customer's PB.
+
+output_template:
+  customer_id: null              # assigned at provisioning
+  owner_name: null
+  phone_number: null             # provisioned Twilio number
+  created_at: null
+
+  persona:
+    name: null                   # from q_pb_name
+    transparency: null           # from q_transparency
+    voice:
+      tone: null                 # from q_voice_feel
+      voice_id: null             # assigned based on tone + available ElevenLabs voices
+      model: "eleven_turbo_v2_5"
+    intent:
+      primary: null              # from q_primary_job
+      secondary: []              # inferred from signals during call
+    guardrails:
+      no_ssn: true               # always on
+      no_credit_card: true       # always on
+      no_deny_being_ai: true     # always on — legal requirement
+      no_purchase_agreement: false
+      no_home_address: false
+      no_schedule: false
+      no_medical: false
+      no_presence_confirm: false
+      custom: []                 # free-form from open_follow_up
+    recording:
+      mode: null                 # from q_call_recording
+      disclosure_text: >
+        "This call may be recorded for quality and documentation purposes."
+    escalation:
+      mode: null                 # from q_escalation
+      escalation_number: null    # owner's cell — filled from contacts
+
+  contacts:
+    vip: []                      # from q_vip_callers
+    blocklist: []
+    voicemail_only: []
+
+  provisioning:
+    twilio_number: null          # provisioned by Sales Engineer PPA
+    railway_service_id: null     # deployed by Sales Engineer PPA
+    ai_vendor: null              # selected by Sales Engineer based on intent + budget
+    ai_model: null               # haiku for light / sonnet for heavy by default
+
+  onboarding_notes:
+    demo_call_signals: []        # signals from original demo call
+    feature_appetite: []         # features they responded to
+    memorable_quotes: []         # their exact words during onboarding
+    feature_requests: []         # things they asked for that don't exist yet
+    ted_notes: null              # anything Ted flagged for product team
+
+# ── Sales Engineer Handoff Note ───────────────────────────────────────────────
+# At the end of the persona builder call, Ted generates this note for the
+# provisioning PPA. The PPA uses it to execute the hands-and-feet work.
+# See pb-sales-engineer.yaml for full Ted persona and provisioning skill set.
+
+handoff_to_provisioning:
+  ted_close: >
+    "Okay — I have everything I need to get your PB set up.
+     I'll send you a text with your new number once it's live.
+     Usually takes about {estimated_time}.
+     Any last questions before I get started?"
+
+  provisioning_tasks:
+    - "Provision Twilio number in customer's preferred area code"
+    - "Deploy PB instance to Railway with customer config"
+    - "Configure ElevenLabs voice matching persona.voice.tone"
+    - "Set up AI model routing based on persona.intent.primary and budget"
+    - "Load contact VIP/blocklist into customer DB"
+    - "Send customer their new PB number via SMS"
+    - "Schedule 48-hour check-in call from Ted to confirm everything is working"
+
+  escalate_to_human_if:
+    - "Customer has complex business requirements Ted's questions didn't cover"
+    - "Customer is in a regulated industry (healthcare, legal, finance)"
+    - "Customer requests custom voice recording (voice actor, not ElevenLabs)"
+    - "Customer wants a feature that doesn't exist yet — log and flag for product"
