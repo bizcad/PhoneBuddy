@@ -1672,8 +1672,8 @@ async def record_message_route(request: Request, CallSid: str = Form(default="")
     await broadcast_dashboard({"event": "recording_start", "sid": CallSid})
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play("Please leave your name, phone number, and email address and I will get back to you.", base_url)}
-  <Record maxLength="120" playBeep="true" timeout="10" transcribe="true"
+  {_play("Please leave your name, phone number, and email address and I will get back to you. Press pound when you are done.", base_url)}
+  <Record maxLength="120" playBeep="true" timeout="10" finishOnKey="#" transcribe="true"
           transcribeCallback="{base_url}/call/recording-complete"
           action="{base_url}/call/message-saved"/>
 </Response>"""
