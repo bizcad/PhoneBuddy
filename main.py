@@ -758,6 +758,18 @@ async def classify_call(
         _evolve_context(CallSid, caller_number, "contact", "forwarded", cfg)
         return await _forward_to_cell(request, CallSid, contact, cfg)
 
+    # Fast-path: any utterance containing "message" → voicemail immediately.
+    # Runs BEFORE Claude to save the API round-trip (~1.4s).
+    _t = transcript_text.lower()
+    if "message" in _t.split() or any(s in _t for s in [
+        "leave a message", "leave nick a message", "leave you a message",
+        "take a message", "message for nick", "i want to leave", "just leave",
+        "can i leave", "want to leave a message"
+    ]):
+        log.info(f"G/FastPath  SID={CallSid}  leave_message detected → voicemail")
+        _evolve_context(CallSid, caller_number, "leave_message", "voicemail", cfg)
+        return await _take_voicemail(request, CallSid, cfg)
+
     # ── C: CLASSIFY ───────────────────────────────────────────────────────────
     # Claude Haiku classifies intent with full context (history + transcript).
     suspicion += _score_name_formality(transcript_text, cfg)
@@ -802,15 +814,6 @@ async def classify_call(
             active_calls[CallSid]["phase"] = "surface"
         _evolve_context(CallSid, caller_number, classification, "prospect_surface", cfg)
         return await _surface_feature(request, CallSid, cfg)
-
-    # Fast-path: caller explicitly wants to leave a message — skip the engagement loop.
-    _leave_signals = ["leave a message", "leave nick a message", "leave you a message",
-                      "take a message", "message for nick", "i want to leave", "just leave",
-                      "can i leave", "want to leave a message"]
-    if any(s in transcript_text.lower() for s in _leave_signals):
-        log.info(f"G/FastPath  SID={CallSid}  leave_message detected → voicemail")
-        _evolve_context(CallSid, caller_number, "leave_message", "voicemail", cfg)
-        return await _take_voicemail(request, CallSid, cfg)
 
     # Every other caller — engage, collect, learn. No firewalls.
     # Scammers, solicitors, unknowns all get the engagement path.
@@ -1147,6 +1150,11 @@ async def close_response(
         if CallSid in active_calls:
             active_calls[CallSid]["classification"] = "hot_lead"
         return Response(content=twiml, media_type="application/xml")
+
+    # Escape hatch: caller just wants to leave a message — skip objection loop.
+    if "message" in speech_lower.split():
+        log.info(f"CloseResponse  SID={CallSid}  leave_message escape → voicemail")
+        return await _take_voicemail(request, CallSid, cfg)
 
     # NO — start objection sequence
     # First no → privacy probe
