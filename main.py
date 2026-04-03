@@ -303,6 +303,95 @@ async def tts_serve(text: str, role: str = "receptionist"):
 HISTORY_DIR = Path("data/history")
 HISTORY_MAX_RECORDS = 10  # per caller, most recent
 
+# ── Caller profiles (living artifact — updated by E3, loaded by R) ─────────────
+# Separate from raw call log. Compact summary that improves with every call.
+
+PROFILES_DIR = Path("data/profiles")
+
+
+def _caller_profile_path(caller_number: str) -> Path:
+    safe = caller_number.lstrip("+").replace("-", "").replace(" ", "")
+    return PROFILES_DIR / f"{safe}.yaml"
+
+
+def _load_profile(caller_number: str) -> dict | None:
+    """Load the living caller profile, or None if first contact."""
+    path = _caller_profile_path(caller_number)
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f) or None
+    except Exception as exc:
+        log.warning("Profile load error for %s: %s", caller_number, exc)
+        return None
+
+
+def _update_profile(
+    caller_number: str,
+    classification: str,
+    outcome: str,
+    suspicion_score: float,
+    transcript_lines: list[str],
+) -> None:
+    """
+    E3 step — update the living caller profile after each call.
+    Profile is a compact, evolving artifact (~150 tokens) that replaces
+    loading raw call history into the classification prompt.
+    """
+    path = _caller_profile_path(caller_number)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.utcnow().isoformat() + "Z"
+    profile = _load_profile(caller_number) or {
+        "phone": caller_number,
+        "name": None,
+        "company": None,
+        "relationship": "unknown",
+        "call_count": 0,
+        "first_call": now,
+        "last_call": None,
+        "suspicion_score": 0.0,
+        "flags": {"repeat_scammer": False, "do_not_answer": False, "vip": False},
+        "classification_history": [],  # last 5: [{date, classification, outcome}]
+        "last_call_summary": None,
+    }
+
+    profile["call_count"] = profile.get("call_count", 0) + 1
+    profile["last_call"] = now
+
+    # Exponential moving average for suspicion (alpha=0.4 — recent calls weighted more)
+    alpha = 0.4
+    profile["suspicion_score"] = round(
+        alpha * suspicion_score + (1 - alpha) * profile.get("suspicion_score", 0.0), 3
+    )
+
+    # Update relationship label
+    bad = {"scam", "solicitation"}
+    good = {"contact", "medical", "professional"}
+    if classification in bad:
+        profile["relationship"] = "scammer" if profile["suspicion_score"] > 0.5 else "suspicious"
+    elif classification in good:
+        profile["relationship"] = classification
+
+    # Append to classification history (keep last 5)
+    hist = profile.get("classification_history", [])
+    hist.append({"date": now[:10], "classification": classification, "outcome": outcome})
+    profile["classification_history"] = hist[-5:]
+
+    # Three-strikes flags — compound across calls
+    recent_bad = sum(1 for h in profile["classification_history"] if h["classification"] in bad)
+    profile["flags"]["repeat_scammer"] = recent_bad >= 2
+    profile["flags"]["do_not_answer"] = recent_bad >= 3
+
+    # Compact last-call summary (~100 chars — feeds R on the next call)
+    tail = " ".join(transcript_lines[-3:]) if transcript_lines else ""
+    if tail:
+        profile["last_call_summary"] = f"{classification}/{outcome}: {tail[:100]}"
+
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(profile, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
 
 def _caller_history_path(caller_number: str) -> Path:
     safe = caller_number.lstrip("+").replace("-", "").replace(" ", "")
@@ -336,25 +425,36 @@ def _save_history_record(caller_number: str, record: dict) -> None:
 async def _retrieve_context(caller_number: str, cfg: dict) -> dict:
     """
     R step — retrieve everything known about this caller before classification.
-    Returns a context dict consumed by _classify_with_claude and routing logic.
+    Loads the living caller profile (compact, ~150 tokens) as the primary source.
+    Raw history is kept as a fallback for callers without a profile yet.
     """
     contact = _match_contact(caller_number, "", cfg)
     history = _load_history(caller_number)
+    profile = _load_profile(caller_number)
 
-    # Compute prior suspicion from call history
-    prior_suspicion = 0.0
-    if history:
-        bad_calls = [h for h in history if h.get("classification") in ("scam", "solicitation")]
-        if bad_calls:
-            # Each bad call adds 0.20, capped at 0.60 so Claude can still override
-            prior_suspicion = min(0.60, len(bad_calls) * 0.20)
+    if profile:
+        prior_suspicion = profile.get("suspicion_score", 0.0)
+        flags = profile.get("flags", {})
+        repeat_bad_actor = flags.get("repeat_scammer", False)
+        do_not_answer = flags.get("do_not_answer", False)
+    else:
+        # First contact — compute from raw history (profile will be created in E3)
+        prior_suspicion = 0.0
+        if history:
+            bad_calls = [h for h in history if h.get("classification") in ("scam", "solicitation")]
+            if bad_calls:
+                prior_suspicion = min(0.60, len(bad_calls) * 0.20)
+        repeat_bad_actor = prior_suspicion >= 0.60
+        do_not_answer = False
 
     return {
         "contact": contact,
         "history": history,
-        "call_count": len(history),
+        "profile": profile,
+        "call_count": profile["call_count"] if profile else len(history),
         "prior_suspicion": prior_suspicion,
-        "repeat_bad_actor": prior_suspicion >= 0.60,
+        "repeat_bad_actor": repeat_bad_actor,
+        "do_not_answer": do_not_answer,
     }
 
 
@@ -380,6 +480,13 @@ def _evolve_context(
         ),
     }
     _save_history_record(caller_number, record)
+    _update_profile(
+        caller_number=caller_number,
+        classification=classification,
+        outcome=outcome,
+        suspicion_score=round(call.get("suspicion_score", 0.0), 3),
+        transcript_lines=call.get("transcript", []),
+    )
     _emit_telemetry(call_sid, classification, outcome, cfg)
     log.info(
         f"E3/Evolve  SID={call_sid}  caller={caller_number}"
@@ -618,7 +725,18 @@ async def classify_call(
         f"  prior_suspicion={suspicion:.2f}  repeat_bad={context['repeat_bad_actor']}"
     )
 
-    # Fast-path: known repeat bad actor — engage deeper, they have the best scripts.
+    # Fast-path: flagged do_not_answer — three confirmed bad calls. No engagement.
+    # No Claude call, no transcript collection. Brief dismissal and hang up.
+    if context["do_not_answer"]:
+        log.info(f"R/DoNotAnswer  SID={CallSid}  caller={caller_number}  — terminating, known bad actor")
+        _evolve_context(CallSid, caller_number, "scam", "blocked", cfg)
+        from twilio.twiml.voice_response import VoiceResponse  # local import avoids top-level dep
+        vr = VoiceResponse()
+        vr.say("This number is not accepting calls.", voice="alice")
+        vr.hangup()
+        return Response(content=str(vr), media_type="text/xml")
+
+    # Known repeat bad actor but not yet flagged do_not_answer — engage, collect the pattern.
     if context["repeat_bad_actor"]:
         log.info(f"R/RepeatBadActor  SID={CallSid}  — engaging anyway, collect the pattern")
 
@@ -684,6 +802,15 @@ async def classify_call(
             active_calls[CallSid]["phase"] = "surface"
         _evolve_context(CallSid, caller_number, classification, "prospect_surface", cfg)
         return await _surface_feature(request, CallSid, cfg)
+
+    # Fast-path: caller explicitly wants to leave a message — skip the engagement loop.
+    _leave_signals = ["leave a message", "leave nick a message", "leave you a message",
+                      "take a message", "message for nick", "i want to leave", "just leave",
+                      "can i leave", "want to leave a message"]
+    if any(s in transcript_text.lower() for s in _leave_signals):
+        log.info(f"G/FastPath  SID={CallSid}  leave_message detected → voicemail")
+        _evolve_context(CallSid, caller_number, "leave_message", "voicemail", cfg)
+        return await _take_voicemail(request, CallSid, cfg)
 
     # Every other caller — engage, collect, learn. No firewalls.
     # Scammers, solicitors, unknowns all get the engagement path.
@@ -1098,16 +1225,18 @@ async def close_response(
 
 
 async def _take_voicemail(request: Request, call_sid: str, cfg: dict) -> Response:
-    """After max classification attempts — take a message."""
+    """Take a message — ask if caller wants a PhoneBuddy pitch first."""
     log.info(f"Taking voicemail  SID={call_sid}")
     await broadcast_dashboard({"event": "voicemail", "sid": call_sid})
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play("I'm sorry, the person you are trying to reach is unavailable. Please leave a message after the tone.", base_url)}
-  <Record maxLength="120" playBeep="true" timeout="10" transcribe="true"
-          transcribeCallback="{base_url}/call/recording-complete"
-          action="{base_url}/call/recording-complete"/>
+  {_play("Nick is not available right now. Before I take your message — would you like to hear about PhoneBuddy, the AI assistant managing this call? Just say yes or no.", base_url)}
+  <Gather input="speech" action="{base_url}/call/voicemail-pb-choice"
+          speechTimeout="auto" timeout="6" language="en-US">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/record-message</Redirect>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
 
@@ -1505,6 +1634,82 @@ async def recording_complete(
     return Response(content="<?xml version='1.0'?><Response/>", media_type="application/xml")
 
 
+@app.post("/call/voicemail-pb-choice")
+async def voicemail_pb_choice(
+    request: Request,
+    CallSid: str = Form(default=""),
+    SpeechResult: str = Form(default=""),
+):
+    """Caller responded to the PhoneBuddy pitch before leaving a message. Yes → play ad. No → record."""
+    cfg = load_config()
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    speech_lower = SpeechResult.strip().lower()
+    yes_signals = ["yes", "yeah", "sure", "absolutely", "ok", "okay", "sounds good",
+                   "tell me", "why not", "go ahead", "please", "of course"]
+    is_yes = any(s in speech_lower for s in yes_signals)
+    log.info(f"VoicemailPBChoice  SID={CallSid}  yes={is_yes}  speech='{SpeechResult.strip()}'")
+
+    if is_yes:
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("Great! PhoneBuddy answers your calls in your own voice, screens the noise, and captures every lead. You can learn more at phone buddy dot ai. Now —", base_url)}
+  <Redirect>{base_url}/call/record-message</Redirect>
+</Response>"""
+    else:
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Redirect>{base_url}/call/record-message</Redirect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/call/record-message")
+async def record_message_route(request: Request, CallSid: str = Form(default="")):
+    """Play the leave-a-message prompt then start recording."""
+    cfg = load_config()
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    log.info(f"RecordMessage  SID={CallSid}")
+    await broadcast_dashboard({"event": "recording_start", "sid": CallSid})
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("Please leave your name, phone number, and email address and I will get back to you.", base_url)}
+  <Record maxLength="120" playBeep="true" timeout="10" transcribe="true"
+          transcribeCallback="{base_url}/call/recording-complete"
+          action="{base_url}/call/message-saved"/>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/call/message-saved")
+async def message_saved(
+    request: Request,
+    CallSid: str = Form(default=""),
+    RecordingUrl: str = Form(default=""),
+    RecordingDuration: str = Form(default="0"),
+    From: str = Form(default=""),
+):
+    """Action callback — Twilio fires this when recording ends (call still live). Say goodbye."""
+    cfg = load_config()
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    call_info = active_calls.get(CallSid, {})
+    caller_number = call_info.get("from") or From or "unknown"
+    duration = int(RecordingDuration) if RecordingDuration.isdigit() else 0
+    log.info(f"MessageSaved  SID={CallSid}  caller={caller_number}  duration={duration}s")
+    await broadcast_dashboard({
+        "event": "message_saved",
+        "sid": CallSid,
+        "caller": caller_number,
+        "duration_sec": duration,
+        "recording_url": RecordingUrl,
+    })
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("Thank you. I'll make sure Nick gets your message. Have a great day. Goodbye.", base_url)}
+  <Hangup/>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
 async def _admin_mode_response(request: Request, call_sid: str,
                                 transcript: str, cfg: dict) -> Response:
     """Owner safe word detected — respond as admin assistant."""
@@ -1599,9 +1804,25 @@ async def _classify_with_claude(
         log.warning("No LLM API key set — defaulting to unknown")
         return "unknown", 0.5, 0.0
 
-    # Build history context string for the prompt
+    # Build caller context for the prompt — profile preferred (compact), raw history as fallback
     history_context = ""
-    if context and context.get("history"):
+    profile = context.get("profile") if context else None
+    if profile:
+        rel = profile.get("relationship", "unknown")
+        score = profile.get("suspicion_score", 0.0)
+        calls = profile.get("call_count", 0)
+        flags = profile.get("flags", {})
+        summary = profile.get("last_call_summary", "")
+        parts = [f"\nCaller profile: relationship={rel}, suspicion={score:.2f}, total_calls={calls}"]
+        if flags.get("repeat_scammer"):
+            parts.append("REPEAT_SCAMMER")
+        if flags.get("do_not_answer"):
+            parts.append("DO_NOT_ANSWER")
+        if summary:
+            parts.append(f"\nPrior call: {summary}")
+        history_context = " | ".join(parts) if len(parts) == 1 else "\n".join(parts)
+    elif context and context.get("history"):
+        # First contact — use raw history until profile is built
         recent = context["history"][-3:]
         classifications = [h.get("classification", "unknown") for h in recent]
         outcomes = [h.get("outcome", "?") for h in recent]
