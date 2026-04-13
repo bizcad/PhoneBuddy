@@ -1,0 +1,100 @@
+# PhoneBuddy — Filler Phrases
+#
+# Generated at startup via ElevenLabs into static/audio/fillers/{id}.mp3
+# Changing voice_id in user-profile.yaml → delete static/audio/fillers/ → restart to regenerate.
+#
+# level:
+#   1 = short reaction (~200-600ms) — always plays first
+#   2 = bridge phrase (~800-1500ms) — added only when estimated LLM+TTS wait exceeds L1 duration
+#
+# Lookup keys: type, polarity, primary_function, emotion
+# (matches filler_phrases_dictionary.csv schema)
+
+fillers:
+  # ── Level 1: short reactions ──────────────────────────────────────────────
+  - id: hmm
+    text: "Hmm."
+    level: 1
+    type: interjection
+    polarity: neutral
+    primary_function: thinking
+    emotion: pondering
+
+  - id: oh
+    text: "Oh."
+    level: 1
+    type: interjection
+    polarity: mixed
+    primary_function: stance_shift
+    emotion: realization
+
+  - id: oh-yeah
+    text: "Oh yeah."
+    level: 1
+    type: interjection
+    polarity: positive
+    primary_function: agreement
+    emotion: engaged
+
+  - id: i-see
+    text: "I see."
+    level: 1
+    type: backchannel
+    polarity: neutral
+    primary_function: acknowledgment
+    emotion: understanding
+
+  - id: aha
+    text: "Aha."
+    level: 1
+    type: interjection
+    polarity: positive
+    primary_function: realization
+    emotion: insight
+
+  - id: mm-hmm
+    text: "Mm-hmm."
+    level: 1
+    type: backchannel
+    polarity: positive
+    primary_function: agreement
+    emotion: attentive
+
+  - id: im-listening
+    text: "I'm listening."
+    level: 1
+    type: backchannel
+    polarity: neutral
+    primary_function: floor_holding
+    emotion: attentive
+
+  # ── Level 2: bridge phrases — added when wait estimate needs more cover ──
+  - id: let-me-check
+    text: "Let me check on that."
+    level: 2
+    type: discourse_marker
+    polarity: neutral
+    primary_function: latency_bridge
+    emotion: deliberate
+
+  - id: want-to-get-this-right
+    text: "I want to make sure I get this right."
+    level: 2
+    type: discourse_marker
+    polarity: neutral
+    primary_function: latency_bridge
+    emotion: deliberate
+
+
+# ── Chain definitions ─────────────────────────────────────────────────────────
+# Each chain: [L1 reaction id, optional L2 bridge id]
+# L2 is only played when the rolling latency estimate exceeds L1 duration + 500ms buffer.
+
+chains:
+  thinking:   [hmm,     want-to-get-this-right]
+  surprised:  [oh,      want-to-get-this-right]
+  engaged:    [oh-yeah, let-me-check]
+  skeptical:  [i-see,   want-to-get-this-right]
+  warm:       [aha,     want-to-get-this-right]
+  agreement:  [mm-hmm,  let-me-check]
+  confused:   [hmm,     want-to-get-this-right]

@@ -20,7 +20,9 @@ import hashlib
 import json
 import logging
 import sqlite3
+import time
 import urllib.parse
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -81,6 +83,17 @@ CREATE TABLE IF NOT EXISTS call_history (
 );
 """
 
+_CREATE_LEADS = """
+CREATE TABLE IF NOT EXISTS leads (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_sid     TEXT    NOT NULL,
+    phone        TEXT    NOT NULL,
+    raw_speech   TEXT    NOT NULL,
+    status       TEXT    NOT NULL DEFAULT 'new',
+    created_at   TEXT    NOT NULL
+);
+"""
+
 
 def get_db() -> sqlite3.Connection:
     """Open (or create) the SQLite DB and return a connection with WAL mode enabled."""
@@ -97,6 +110,7 @@ def init_db() -> None:
     try:
         conn.execute(_CREATE_CONTACTS)
         conn.execute(_CREATE_CALL_HISTORY)
+        conn.execute(_CREATE_LEADS)
         conn.commit()
         log.info("SQLite schema ready: %s", _DB_PATH)
     finally:
@@ -105,8 +119,10 @@ def init_db() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI lifespan handler — runs init_db before accepting requests."""
+    """FastAPI lifespan handler — runs init_db and pre-generates filler audio before accepting requests."""
     init_db()
+    cfg = load_config()
+    await _prebuild_filler_cache(cfg)
     yield
 
 
@@ -119,6 +135,249 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 CONFIG_PATH = os.environ.get("PHONEBUDDY_CONFIG", "config/user-profile.yaml")
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
 PPA_URL = os.environ.get("PPA_URL", "").strip().rstrip("/")
+
+
+def _ensure_active_call(call_sid: str, from_number: str = "", to_number: str = "") -> dict:
+    """Ensure the per-call state exists before codec callbacks arrive."""
+    call = active_calls.get(call_sid)
+    if call is None:
+        call = {
+            "sid": call_sid,
+            "from": from_number,
+            "to": to_number,
+            "started": datetime.utcnow().isoformat(),
+            "status": "answering",
+            "transcript": [],
+            "classification": None,
+            "suspicion_score": 0.0,
+            "pitched": False,
+            "phase": "codec_v2",
+            "signals": [],
+            "features_declared": [],
+            "feature_responses": {},
+            "close_attempts": 0,
+        }
+        active_calls[call_sid] = call
+    else:
+        if from_number:
+            call["from"] = from_number
+        if to_number:
+            call["to"] = to_number
+    return call
+
+
+def _infer_branch_outcome(speech: str, digits: str) -> Optional[str]:
+    text = speech.strip().lower()
+    if digits == "1":
+        return "yes"
+    if digits == "2":
+        return "no"
+    if not text and not digits:
+        return "timeout"
+
+    yes_signals = ["yes", "yeah", "yep", "sure", "okay", "ok", "why not", "go ahead"]
+    no_signals = ["no", "nope", "nah", "not now", "no thanks"]
+    if any(signal in text for signal in yes_signals):
+        return "yes"
+    if any(signal in text for signal in no_signals):
+        return "no"
+    return None
+
+
+def _build_v2_sensation(
+    *,
+    call_sid: str,
+    from_number: str,
+    to_number: str,
+    context_type: str,
+    call_status: str,
+    payload: Optional[dict] = None,
+    caller_meta: Optional[dict] = None,
+) -> dict:
+    """Merge Twilio callback fields into the stored next_sensation template."""
+    call = _ensure_active_call(call_sid, from_number, to_number)
+    template = dict(call.get("next_sensation") or {})
+    sensation = template or {}
+
+    sensation["call_sid"] = call_sid
+    sensation["caller_phone"] = from_number or sensation.get("caller_phone") or call.get("from")
+    sensation["called_phone"] = to_number or sensation.get("called_phone") or call.get("to")
+    sensation["call_status"] = call_status or sensation.get("call_status") or "in-progress"
+    sensation["context_type"] = context_type
+
+    merged_payload = dict(sensation.get("payload") or {})
+    if payload:
+        merged_payload.update({key: value for key, value in payload.items() if value not in (None, "")})
+    sensation["payload"] = merged_payload
+
+    if caller_meta:
+        for key, value in caller_meta.items():
+            if value not in (None, ""):
+                sensation[key] = value
+
+    return sensation
+
+
+async def _post_ppa_v2_turn(sensation: dict) -> dict:
+    if not PPA_URL:
+        raise RuntimeError("PPA_URL not configured")
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.post(f"{PPA_URL}/v2/turn", json=sensation)
+        response.raise_for_status()
+        return response.json()
+
+
+def _store_next_sensation(call_sid: str, next_sensation: Optional[dict]) -> None:
+    call = _ensure_active_call(call_sid)
+    if next_sensation:
+        call["next_sensation"] = next_sensation
+
+
+def _v2_callback_url(base_url: str, context_type: str) -> str:
+    mapping = {
+        "gather_speech": f"{base_url}/call/v2/turn/gather",
+        "gather_dtmf": f"{base_url}/call/v2/turn/gather",
+        "dial_complete": f"{base_url}/call/v2/turn/dial-complete",
+        "record_complete": f"{base_url}/call/v2/turn/record-complete",
+        "status_callback": f"{base_url}/call/v2/turn/status",
+        "hangup": f"{base_url}/call/v2/turn/status",
+        "filler_loop": f"{base_url}/call/v2/turn/filler-loop",
+    }
+    return mapping.get(context_type, f"{base_url}/call/v2/turn/gather")
+
+
+def _render_v2_action(call_sid: str, action: dict, base_url: str) -> Response:
+        verb = (action.get("verb") or "gather").lower()
+        params = dict(action.get("params") or {})
+        next_sensation = action.get("next_sensation") or {}
+        _store_next_sensation(call_sid, next_sensation)
+
+        if verb == "gather":
+                prompt = params.get("prompt", "Hello, how can I help you today?")
+                timeout = params.get("timeout", 5)
+                callback_url = _v2_callback_url(base_url, next_sensation.get("context_type", "gather_speech"))
+                twiml = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<Response>
+    <Gather input=\"speech dtmf\" action=\"{callback_url}\"
+                    speechTimeout=\"auto\" timeout=\"{timeout}\" language=\"en-US\" finishOnKey=\"#\">
+        {_play(prompt, base_url)}
+        <Pause length=\"1\"/>
+    </Gather>
+    <Redirect method=\"POST\">{callback_url}</Redirect>
+</Response>"""
+                return Response(content=twiml, media_type="application/xml")
+
+        if verb == "say":
+                prompt = params.get("text") or params.get("prompt") or "Hello."
+                callback_url = _v2_callback_url(base_url, next_sensation.get("context_type", "gather_speech"))
+                twiml = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<Response>
+    {_play(prompt, base_url)}
+    <Gather input=\"speech dtmf\" action=\"{callback_url}\"
+                    speechTimeout=\"auto\" timeout=\"5\" language=\"en-US\" finishOnKey=\"#\">
+        <Pause length=\"1\"/>
+    </Gather>
+    <Redirect method=\"POST\">{callback_url}</Redirect>
+</Response>"""
+                return Response(content=twiml, media_type="application/xml")
+
+        if verb == "dial":
+                number = params.get("number") or params.get("transfer_to") or ""
+                caller_id = params.get("caller_id") or ""
+                timeout = params.get("timeout")
+                action_url = _v2_callback_url(base_url, next_sensation.get("context_type", "dial_complete"))
+                timeout_attr = f' timeout="{timeout}"' if timeout else ""
+                caller_id_attr = f' callerId="{caller_id}"' if caller_id else ""
+                twiml = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<Response>
+    <Dial{caller_id_attr}{timeout_attr} action=\"{action_url}\">
+        <Number>{number}</Number>
+    </Dial>
+</Response>"""
+                return Response(content=twiml, media_type="application/xml")
+
+        if verb == "record":
+                action_url = _v2_callback_url(base_url, next_sensation.get("context_type", "record_complete"))
+                max_length = params.get("max_length", 120)
+                play_beep = str(params.get("play_beep", True)).lower()
+                twiml = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<Response>
+    <Record maxLength=\"{max_length}\" playBeep=\"{play_beep}\" timeout=\"10\" finishOnKey=\"#\"
+                    transcribe=\"true\" transcribeCallback=\"{action_url}\" action=\"{action_url}\"/>
+</Response>"""
+                return Response(content=twiml, media_type="application/xml")
+
+        if verb == "play":
+                url = params.get("url", "")
+                twiml = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<Response>
+    <Play>{url}</Play>
+</Response>"""
+                return Response(content=twiml, media_type="application/xml")
+
+        if verb == "pause":
+                length = params.get("length", 1)
+                callback_url = _v2_callback_url(base_url, next_sensation.get("context_type", "filler_loop"))
+                twiml = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<Response>
+    <Pause length=\"{length}\"/>
+    <Redirect method=\"POST\">{callback_url}</Redirect>
+</Response>"""
+                return Response(content=twiml, media_type="application/xml")
+
+        if verb == "filler":
+                filler_url = params.get("url")
+                callback_url = _v2_callback_url(base_url, next_sensation.get("context_type", "filler_loop"))
+                play_xml = f"<Play>{filler_url}</Play>" if filler_url else _play_filler("hmmm(pondering).wav", base_url)
+                twiml = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<Response>
+    {play_xml}
+    <Redirect method=\"POST\">{callback_url}</Redirect>
+</Response>"""
+                return Response(content=twiml, media_type="application/xml")
+
+        active_calls.pop(call_sid, None)
+        twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Hangup/>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+
+async def _handle_v2_turn(
+    request: Request,
+    *,
+    call_sid: str,
+    from_number: str,
+    to_number: str,
+    context_type: str,
+    call_status: str,
+    payload: Optional[dict] = None,
+    caller_meta: Optional[dict] = None,
+) -> Response:
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    sensation = _build_v2_sensation(
+        call_sid=call_sid,
+        from_number=from_number,
+        to_number=to_number,
+        context_type=context_type,
+        call_status=call_status,
+        payload=payload,
+        caller_meta=caller_meta,
+    )
+    action = await _post_ppa_v2_turn(sensation)
+
+    call = _ensure_active_call(call_sid, from_number, to_number)
+    if payload:
+        speech = (payload.get("speech_result") or "").strip()
+        if speech:
+            call["transcript"].append(speech)
+        branch_outcome = payload.get("branch_outcome")
+        if branch_outcome:
+            call["last_branch_outcome"] = branch_outcome
+
+    return _render_v2_action(call_sid, action, base_url)
 
 
 async def _post_ppa_sensation(caller_id: str, classification: str, outcome: str, transcript: list[str]) -> None:
@@ -178,6 +437,103 @@ def load_config() -> dict:
 # ── TTS — ElevenLabs receptionist / Polly IVR ────────────────────────────────
 
 _tts_cache: dict[str, bytes] = {}  # keyed by "role:text" — avoids re-generating identical phrases
+
+# ── Filler latency tracking ───────────────────────────────────────────────────
+_FILLERS_DIR = Path(__file__).parent / "static" / "audio" / "fillers"
+_FILLER_SPEECH_MS: dict[str, int] = {}   # id → measured MP3 duration in ms
+_RESPONSE_LATENCY: deque = deque(maxlen=10)  # rolling window of LLM+TTS times (ms)
+_FILLER_CFG_CACHE: dict | None = None    # loaded once at startup
+
+
+def _mp3_duration_ms(audio_bytes: bytes) -> int:
+    """Estimate MP3 duration from byte size. ElevenLabs turbo returns ~128 kbps."""
+    return max(200, int(len(audio_bytes) * 8 / 128))
+
+
+def _load_filler_cfg() -> dict:
+    global _FILLER_CFG_CACHE
+    if _FILLER_CFG_CACHE is None:
+        filler_path = Path(__file__).parent / "config" / "filler_phrases.yaml"
+        with open(filler_path, encoding="utf-8") as f:
+            _FILLER_CFG_CACHE = yaml.safe_load(f)
+    return _FILLER_CFG_CACHE
+
+
+async def _prebuild_filler_cache(cfg: dict) -> None:
+    """TTS every filler phrase at startup so call-time latency is zero.
+    Skips any file that already exists on disk — delete the folder to force regeneration.
+    """
+    _FILLERS_DIR.mkdir(parents=True, exist_ok=True)
+    filler_cfg = _load_filler_cfg()
+    for filler in filler_cfg.get("fillers", []):
+        fid = filler["id"]
+        path = _FILLERS_DIR / f"{fid}.mp3"
+        if not path.exists():
+            try:
+                audio = await _tts_elevenlabs(filler["text"], cfg, "receptionist")
+                path.write_bytes(audio)
+                log.info(f"Filler pre-gen: {fid}  {len(audio)} bytes")
+            except Exception as exc:
+                log.warning(f"Filler pre-gen failed for {fid}: {exc}")
+                continue
+        audio_bytes = path.read_bytes()
+        _FILLER_SPEECH_MS[fid] = _mp3_duration_ms(audio_bytes)
+    log.info(f"Filler cache ready: {list(_FILLER_SPEECH_MS)}")
+
+
+def _estimate_wait_ms() -> int:
+    """Rolling average of recent LLM+TTS response times. Defaults to 1500ms cold."""
+    if not _RESPONSE_LATENCY:
+        return 1500
+    return int(sum(_RESPONSE_LATENCY) / len(_RESPONSE_LATENCY))
+
+
+def _build_filler_queue(speech: str, complexity: int) -> list[str]:
+    """Build ordered filler ID list sized to complexity (1–5).
+    First entry is always the L1 tone-matched reaction.
+    Remaining slots are L2 bridge phrases up to complexity count.
+    Max queue depth: 5 (never > 5 fillers before graceful degradation).
+    """
+    filler_cfg = _load_filler_cfg()
+    tone = _select_chain(speech)
+    chain_ids: list[str] = filler_cfg.get("chains", {}).get(tone, ["hmm", "want-to-get-this-right"])
+    filler_levels = {f["id"]: f["level"] for f in filler_cfg.get("fillers", [])}
+
+    l1 = [fid for fid in chain_ids if filler_levels.get(fid, 1) == 1]
+    l2 = [fid for fid in chain_ids if filler_levels.get(fid, 1) == 2]
+
+    queue = l1[:1] if l1 else ["hmm"]
+    # Fill remaining slots (complexity - 1) from L2, cycling if needed
+    l2_budget = min(complexity - 1, 4)  # cap at 4 additional = 5 total
+    for i in range(l2_budget):
+        if l2:
+            queue.append(l2[i % len(l2)])
+
+    return queue
+
+
+def _build_filler_chain(speech: str) -> list[str]:
+    """Return list of filler IDs to play before the LLM redirect.
+    Always starts with one L1 reaction matched by tone.
+    Appends one L2 bridge phrase only when the rolling latency estimate
+    exceeds L1 duration + 500ms buffer — i.e. when the wait is genuinely long.
+    """
+    filler_cfg = _load_filler_cfg()
+    tone = _select_chain(speech)
+    chain_ids: list[str] = filler_cfg.get("chains", {}).get(tone, ["hmm", "want-to-get-this-right"])
+
+    filler_levels = {f["id"]: f["level"] for f in filler_cfg.get("fillers", [])}
+
+    l1 = [fid for fid in chain_ids if filler_levels.get(fid, 1) == 1]
+    l2 = [fid for fid in chain_ids if filler_levels.get(fid, 1) == 2]
+
+    result = l1[:1] if l1 else ["hmm"]
+    covered_ms = sum(_FILLER_SPEECH_MS.get(fid, 400) for fid in result)
+
+    if l2 and _estimate_wait_ms() > covered_ms + 500:
+        result.extend(l2[:1])
+
+    return result
 
 
 async def _tts_elevenlabs(text: str, cfg: dict, voice_role: str = "receptionist") -> bytes:
@@ -273,13 +629,32 @@ def _select_chain(speech: str) -> str:
     return "thinking"
 
 
-def _play_filler_chain(chain_name: str, base_url: str) -> str:
-    """Return concatenated <Play> elements for an entire filler chain.
-    Combined duration covers Haiku + ElevenLabs latency before the <Redirect> fires.
-    Falls back to single hmmm if chain name is unknown.
+def _play_filler_by_id(fid: str, base_url: str) -> str:
+    """Serve a YAML-driven filler by ID. Prefers .mp3 (pre-generated), falls back to .wav (recorded)."""
+    mp3_path = _FILLERS_DIR / f"{fid}.mp3"
+    wav_path  = _FILLERS_DIR / f"{fid}.wav"
+    if mp3_path.exists():
+        return f'<Play>{base_url}/static/audio/fillers/{fid}.mp3</Play>'
+    if wav_path.exists():
+        return f'<Play>{base_url}/static/audio/fillers/{fid}.wav</Play>'
+    return ""  # missing filler — skip silently rather than error
+
+
+def _play_filler_chain(speech: str, base_url: str) -> str:
+    """Return concatenated <Play> elements for a dynamically selected filler chain.
+    Chain length adapts to rolling latency estimate: L1 always, L2 only when the wait needs cover.
+    Falls back to FILLER_CHAINS (hardcoded) if YAML not loaded yet.
     """
-    fillers = FILLER_CHAINS.get(chain_name, FILLER_CHAINS["thinking"])
-    return "\n  ".join(_play_filler(f, base_url) for f in fillers)
+    if _FILLER_SPEECH_MS:
+        # YAML-driven path — use dynamic selection
+        chain_ids = _build_filler_chain(speech)
+        elements = [_play_filler_by_id(fid, base_url) for fid in chain_ids]
+        return "\n  ".join(e for e in elements if e)
+    else:
+        # Cold-start fallback — YAML not loaded yet (shouldn't happen in prod)
+        chain_name = _select_chain(speech)
+        fillers = FILLER_CHAINS.get(chain_name, FILLER_CHAINS["thinking"])
+        return "\n  ".join(_play_filler(f, base_url) for f in fillers)
 
 
 @app.get("/tts")
@@ -467,7 +842,7 @@ def _evolve_context(
 ) -> None:
     """
     E3 step — persist this call's outcome to per-caller history and emit telemetry.
-    Call this just before returning each TwiML response so outcome is recorded.
+    Call this at route transitions. Use _close_call() at true terminal outcomes.
     """
     call = active_calls.get(call_sid, {})
     record = {
@@ -499,6 +874,90 @@ def _evolve_context(
         outcome=outcome,
         transcript=call.get("transcript", []),
     ))
+
+
+# Typed terminal completion outcomes — every call ends in exactly one of these.
+# Used as the `outcome` field in call_history and as the E3 learning signal.
+_COMPLETION_TYPES = {
+    "hot_lead",            # Objective 3: caller said yes, lead captured and confirmed
+    "withdrawal_closed",   # Objective 1: objections exhausted, withdrawal rant played
+    "voicemail_left",      # Caller left a message (any funnel entry point)
+    "voicemail_no_message",# Caller reached voicemail, hung up without recording
+    "contact_forwarded",   # Known contact forwarded to Nick's cell
+    "blocked",             # do_not_answer flag: rejected at gate
+    "admin_session",       # Owner safeword: admin query handled
+    "latency_degradation", # Filler queue exhausted, offered message or ad
+}
+
+
+def _derive_completion_type(call: dict, recording_left: bool = False) -> str:
+    """Derive completion type from call state at the moment of terminal closure.
+    Avoids threading the completion string through every code path manually.
+    """
+    phase = call.get("phase", "")
+    classification = call.get("classification", "")
+    close_attempts = call.get("close_attempts", 0)
+    thresholds = call.get("_thresholds", {})
+    max_close = thresholds.get("close_attempts_before_withdrawal", 3)
+
+    if classification == "hot_lead":
+        return "hot_lead"
+    if phase in ("blocked",):
+        return "blocked"
+    if phase in ("admin",):
+        return "admin_session"
+    if close_attempts >= max_close:
+        return "withdrawal_closed"
+    if recording_left:
+        return "voicemail_left"
+    return "voicemail_no_message"
+
+
+def _close_call(call_sid: str, caller_number: str, completion_type: str, cfg: dict) -> None:
+    """Write the terminal call_history record, run E3, and clean active_calls.
+    Every true terminal outcome calls this exactly once.
+    completion_type must be one of _COMPLETION_TYPES.
+    """
+    if completion_type not in _COMPLETION_TYPES:
+        log.warning(f"CloseCall  SID={call_sid}  unknown completion_type={completion_type!r}")
+
+    call = active_calls.get(call_sid, {})
+    classification = call.get("classification") or "unknown"
+    transcript = call.get("transcript", [])
+    suspicion = round(call.get("suspicion_score", 0.0), 3)
+    now = datetime.utcnow().isoformat()
+
+    # Write to call_history (the table that was created but never written to)
+    try:
+        conn = get_db()
+        try:
+            conn.execute(
+                """INSERT OR IGNORE INTO call_history
+                   (call_sid, phone, name, classification, suspicion_score, outcome, transcript, started_at, ended_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    call_sid,
+                    caller_number,
+                    call.get("contact_name"),
+                    classification,
+                    suspicion,
+                    completion_type,
+                    " | ".join(transcript),
+                    call.get("started", now),
+                    now,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.error(f"CloseCall DB write failed  SID={call_sid}  error={exc}")
+
+    _evolve_context(call_sid, caller_number, classification, completion_type, cfg)
+    log.info(f"CloseCall  SID={call_sid}  caller={caller_number}  completion={completion_type}")
+
+    # Clean active_calls — prevents state leakage across demo calls (AF-11)
+    active_calls.pop(call_sid, None)
 
 
 # ── Active calls (in-memory for MVP) ─────────────────────────────────────────
@@ -562,6 +1021,26 @@ async def inbound_call(
 
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
 
+    if PPA_URL:
+        try:
+            return await _handle_v2_turn(
+                request,
+                call_sid=CallSid,
+                from_number=From,
+                to_number=To,
+                context_type="inbound",
+                call_status=CallStatus or "ringing",
+                caller_meta={
+                    "caller_city": request.query_params.get("FromCity") or request.headers.get("X-Twilio-FromCity"),
+                    "caller_state": request.query_params.get("FromState") or request.headers.get("X-Twilio-FromState"),
+                    "caller_zip": request.query_params.get("FromZip") or request.headers.get("X-Twilio-FromZip"),
+                    "caller_country": request.query_params.get("FromCountry") or request.headers.get("X-Twilio-FromCountry"),
+                    "caller_name": request.query_params.get("CallerName") or request.headers.get("X-Twilio-CallerName"),
+                },
+            )
+        except Exception as exc:
+            log.exception("V2 inbound codec failed; falling back to legacy path  SID=%s  error=%s", CallSid, exc)
+
     # ── CALLER ID LOOKUP — branch before playing anything ────────────────────
     contact = _match_contact(From, "", cfg)
 
@@ -575,7 +1054,7 @@ async def inbound_call(
             "from": From,
             "status": f"known contact: {first_name}",
         })
-        _evolve_context(CallSid, From, "contact", "forwarded", cfg)
+        # No evolve here — dial-complete fires _close_call when the actual outcome is known.
         greeting = f"Hi {first_name}, this is Nick's assistant. I'm getting him for you right now — one moment please."
         cell = cfg["user"]["cell"]
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -614,6 +1093,179 @@ async def inbound_call(
 </Response>"""
 
     return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/call/v2/turn/gather")
+async def v2_turn_gather(
+    request: Request,
+    CallSid: str = Form(...),
+    From: str = Form(default=""),
+    To: str = Form(default=""),
+    SpeechResult: str = Form(default=""),
+    Confidence: float = Form(default=0.0),
+    Digits: str = Form(default=""),
+    CallStatus: str = Form(default="in-progress"),
+):
+    context_type = "gather_dtmf" if Digits and not SpeechResult.strip() else "gather_speech"
+    payload: dict[str, object] = {}
+    speech = SpeechResult.strip()
+    if speech:
+        payload["speech_result"] = speech
+        payload["confidence"] = Confidence
+    if Digits:
+        payload["digits"] = Digits
+
+    branch_outcome = _infer_branch_outcome(speech, Digits)
+    if branch_outcome:
+        payload["branch_outcome"] = branch_outcome
+
+    try:
+        return await _handle_v2_turn(
+            request,
+            call_sid=CallSid,
+            from_number=From,
+            to_number=To,
+            context_type=context_type,
+            call_status=CallStatus,
+            payload=payload,
+        )
+    except Exception as exc:
+        log.exception("V2 gather codec failed; falling back to legacy classify  SID=%s  error=%s", CallSid, exc)
+        return await classify_call(
+            request,
+            CallSid=CallSid,
+            From=From,
+            SpeechResult=SpeechResult,
+            Confidence=Confidence,
+            Digits=Digits,
+        )
+
+
+@app.post("/call/v2/turn/dial-complete")
+async def v2_turn_dial_complete(
+    request: Request,
+    CallSid: str = Form(default=""),
+    From: str = Form(default=""),
+    To: str = Form(default=""),
+    DialCallStatus: str = Form(default=""),
+    DialCallDuration: str = Form(default=""),
+    name: str = "them",
+):
+    try:
+        return await _handle_v2_turn(
+            request,
+            call_sid=CallSid,
+            from_number=From,
+            to_number=To,
+            context_type="dial_complete",
+            call_status=DialCallStatus or "completed",
+            payload={
+                "dial_call_status": DialCallStatus,
+                "dial_duration": DialCallDuration,
+            },
+        )
+    except Exception as exc:
+        log.exception("V2 dial-complete codec failed; falling back to legacy handler  SID=%s  error=%s", CallSid, exc)
+        return await dial_complete(
+            request,
+            CallSid=CallSid,
+            DialCallStatus=DialCallStatus,
+            From=From,
+            name=name,
+        )
+
+
+@app.post("/call/v2/turn/record-complete")
+async def v2_turn_record_complete(
+    request: Request,
+    CallSid: str = Form(default=""),
+    From: str = Form(default=""),
+    To: str = Form(default=""),
+    RecordingUrl: str = Form(default=""),
+    RecordingDuration: str = Form(default="0"),
+    TranscriptionText: str = Form(default=""),
+    TranscriptionStatus: str = Form(default=""),
+):
+    try:
+        return await _handle_v2_turn(
+            request,
+            call_sid=CallSid,
+            from_number=From,
+            to_number=To,
+            context_type="record_complete",
+            call_status="completed",
+            payload={
+                "recording_url": RecordingUrl,
+                "recording_duration": RecordingDuration,
+                "transcription_text": TranscriptionText,
+                "transcription_status": TranscriptionStatus,
+            },
+        )
+    except Exception as exc:
+        log.exception("V2 record-complete codec failed; falling back to legacy handler  SID=%s  error=%s", CallSid, exc)
+        return await recording_complete(
+            request,
+            CallSid=CallSid,
+            RecordingUrl=RecordingUrl,
+            RecordingDuration=RecordingDuration,
+            TranscriptionText=TranscriptionText,
+            TranscriptionStatus=TranscriptionStatus,
+            From=From,
+        )
+
+
+@app.post("/call/v2/turn/filler-loop")
+async def v2_turn_filler_loop(
+    request: Request,
+    sid: str = "",
+    CallSid: str = Form(default=""),
+    From: str = Form(default=""),
+    To: str = Form(default=""),
+):
+    call_sid = sid or CallSid
+    try:
+        return await _handle_v2_turn(
+            request,
+            call_sid=call_sid,
+            from_number=From,
+            to_number=To,
+            context_type="filler_loop",
+            call_status="in-progress",
+        )
+    except Exception as exc:
+        log.exception("V2 filler-loop codec failed; falling back to legacy handler  SID=%s  error=%s", call_sid, exc)
+        return await filler_loop(request, sid=call_sid, CallSid=CallSid)
+
+
+@app.post("/call/v2/turn/status")
+async def v2_turn_status(
+    request: Request,
+    CallSid: str = Form(default=""),
+    From: str = Form(default=""),
+    To: str = Form(default=""),
+    CallStatus: str = Form(default=""),
+    CallDuration: str = Form(default=""),
+    Timestamp: str = Form(default=""),
+):
+    terminal_statuses = {"completed", "busy", "failed", "no-answer", "canceled"}
+    context_type = "hangup" if CallStatus in terminal_statuses else "status_callback"
+    try:
+        return await _handle_v2_turn(
+            request,
+            call_sid=CallSid,
+            from_number=From,
+            to_number=To,
+            context_type=context_type,
+            call_status=CallStatus,
+            payload={
+                "reason": CallStatus,
+                "call_duration": CallDuration,
+                "timestamp": Timestamp,
+            },
+        )
+    except Exception as exc:
+        log.exception("V2 status codec failed; returning empty response  SID=%s  error=%s", CallSid, exc)
+        return Response(content="<?xml version='1.0'?><Response/>", media_type="application/xml")
 
 
 _feature_brief_cache: Optional[dict] = None
@@ -729,7 +1381,7 @@ async def classify_call(
     # No Claude call, no transcript collection. Brief dismissal and hang up.
     if context["do_not_answer"]:
         log.info(f"R/DoNotAnswer  SID={CallSid}  caller={caller_number}  — terminating, known bad actor")
-        _evolve_context(CallSid, caller_number, "scam", "blocked", cfg)
+        _close_call(CallSid, caller_number, "blocked", cfg)
         from twilio.twiml.voice_response import VoiceResponse  # local import avoids top-level dep
         vr = VoiceResponse()
         vr.say("This number is not accepting calls.", voice="alice")
@@ -755,7 +1407,9 @@ async def classify_call(
     # "self" tag is intentionally excluded here — owner must use safeword, not just caller ID.
     contact = context["contact"] or _match_contact(caller_number, transcript_text, cfg)
     if contact and "self" not in contact.get("tags", []):
-        _evolve_context(CallSid, caller_number, "contact", "forwarded", cfg)
+        # Don't close here — dial result is not yet known.
+        # _close_call fires in /call/dial-complete when DialCallStatus is set.
+        log.info(f"G/ContactMatch  SID={CallSid}  → forwarding, awaiting dial outcome")
         return await _forward_to_cell(request, CallSid, contact, cfg)
 
     # Fast-path: any utterance containing "message" → voicemail immediately.
@@ -873,6 +1527,18 @@ async def _hold_and_brief(request: Request, call_sid: str, transcript: str,
   <Enqueue waitUrl="{base_url}/call/hold-music">{call_sid}_queue</Enqueue>
 </Response>"""
     # TODO Phase 2: trigger outbound call to cell with whisper briefing
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/call/hold-music")
+async def hold_music(request: Request):
+    """Twilio Enqueue waitUrl — plays while caller is held for medical/professional escalation.
+    Stub: returns silence TwiML so Twilio doesn't 404. Replace with real hold audio in Phase 2.
+    """
+    twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Play loop="10">https://demo.twilio.com/docs/classic.mp3</Play>
+</Response>"""
     return Response(content=twiml, media_type="application/xml")
 
 
@@ -1141,7 +1807,7 @@ async def close_response(
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play("Perfect. Give me your name and the best number to reach you. I'll make sure someone calls you personally.", base_url)}
-  <Gather input="speech" action="{base_url}/call/engage-response"
+  <Gather input="speech" action="{base_url}/call/lead-capture"
           speechTimeout="auto" timeout="15" language="en-US">
     <Pause length="1"/>
   </Gather>
@@ -1272,6 +1938,9 @@ async def admin_query(
         transcript=call.get("transcript", []) + [query],
     ))
 
+    caller_number = call.get("from", "unknown")
+    _close_call(CallSid, caller_number, "admin_session", cfg)
+
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play(reply, base_url)}
@@ -1296,6 +1965,10 @@ async def dial_complete(
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
 
     if DialCallStatus == "completed":
+        cfg = load_config()
+        call_info = active_calls.get(CallSid, {})
+        caller_number = call_info.get("from") or From or "unknown"
+        _close_call(CallSid, caller_number, "contact_forwarded", cfg)
         return Response(content="<?xml version='1.0'?><Response/>", media_type="application/xml")
 
     log.info(f"No answer  SID={CallSid}  status={DialCallStatus}  from={From}  name={name}")
@@ -1312,6 +1985,70 @@ async def dial_complete(
   <Redirect>{base_url}/call/voicemail</Redirect>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
+
+
+def _score_complexity(speech: str, call: dict) -> int:
+    """Estimate question complexity 1–5 to size the filler queue.
+    Higher = more fillers = more time for Claude to respond.
+    Uses only cheap signals — no LLM call.
+    """
+    words = speech.split()
+    word_count = len(words)
+
+    # Start from word-count baseline
+    if word_count <= 3:
+        score = 1
+    elif word_count <= 8:
+        score = 2
+    elif word_count <= 15:
+        score = 3
+    elif word_count <= 25:
+        score = 4
+    else:
+        score = 5
+
+    # Bump for open-ended / multi-part signals
+    complex_keywords = ["how", "why", "explain", "what if", "difference", "compare", "versus",
+                        "when", "where", "who", "should i", "can you", "tell me about"]
+    if any(kw in speech.lower() for kw in complex_keywords):
+        score = min(5, score + 1)
+
+    # Bump for multi-sentence speech (caller asking several things)
+    if speech.count("?") >= 2 or speech.count(".") >= 2:
+        score = min(5, score + 1)
+
+    # Drop for known-pattern short calls — profile signals suggest fast answer
+    classification = call.get("classification", "")
+    if classification in ("scam", "solicitation") and word_count <= 10:
+        score = max(1, score - 1)
+
+    return score
+
+
+async def _generate_and_store_followup(
+    speech: str,
+    transcript: list[str],
+    cfg: dict,
+    call_sid: str,
+) -> None:
+    """Background task — runs concurrently with filler playback.
+    Writes result to active_calls[call_sid]["pending_response"] when ready.
+    Pre-TTS the response so filler-loop can serve it instantly.
+    """
+    t0 = time.monotonic()
+    try:
+        followup = await _generate_followup(speech, transcript, cfg)
+        # Pre-fetch TTS so Twilio gets it from cache on first hit
+        await _tts_elevenlabs(followup, cfg, "receptionist")
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        _RESPONSE_LATENCY.append(elapsed_ms)
+        log.info(f"Background followup ready  SID={call_sid}  latency={elapsed_ms}ms")
+        if call_sid in active_calls:
+            active_calls[call_sid]["pending_response"] = followup
+    except Exception as exc:
+        log.error(f"Background followup failed  SID={call_sid}  error={exc}")
+        if call_sid in active_calls:
+            active_calls[call_sid]["pending_response"] = "__failed__"
 
 
 async def _generate_followup(speech: str, transcript_so_far: list[str], cfg: dict) -> str:
@@ -1450,6 +2187,133 @@ def _find_cached_reply(speech: str, call_sid: str) -> Optional[str]:
     return best_reply
 
 
+@app.post("/call/lead-capture")
+async def lead_capture(
+    request: Request,
+    CallSid: str = Form(default=""),
+    From: str = Form(default=""),
+    SpeechResult: str = Form(default=""),
+):
+    """
+    Caller gives name and callback number after saying yes to setup.
+    Write raw speech immediately so the lead is never lost, then confirm back.
+    """
+    cfg = load_config()
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    speech = SpeechResult.strip()
+
+    if not speech:
+        call = active_calls.get(CallSid, {})
+        retry = call.get("lead_retry", 0)
+        if retry >= 1:
+            return await _take_voicemail(request, CallSid, cfg)
+        if CallSid in active_calls:
+            active_calls[CallSid]["lead_retry"] = retry + 1
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("I want to make sure I get this right. Can you give me your name and the best number to reach you?", base_url)}
+  <Gather input="speech" action="{base_url}/call/lead-capture"
+          speechTimeout="auto" timeout="15" language="en-US">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/voicemail</Redirect>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # Persist immediately — if anything fails after this, the lead is already in the DB.
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO leads (call_sid, phone, raw_speech, status, created_at) VALUES (?, ?, ?, 'new', ?)",
+            (CallSid, From, speech, datetime.utcnow().isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    log.info(f"LeadCapture  SID={CallSid}  from={From}  speech='{speech}'")
+    await broadcast_dashboard({"event": "lead_captured", "sid": CallSid, "from": From, "speech": speech})
+
+    if CallSid in active_calls:
+        active_calls[CallSid]["lead_speech"] = speech
+
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play(f"I have you saying: {speech}. Is that right?", base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/lead-capture-confirm"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/lead-capture-confirm</Redirect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/call/lead-capture-confirm")
+async def lead_capture_confirm(
+    request: Request,
+    CallSid: str = Form(default=""),
+    SpeechResult: str = Form(default=""),
+    Digits: str = Form(default=""),
+):
+    """
+    Caller confirms or corrects the captured name/number.
+    YES → mark confirmed, hang up cleanly.
+    NO  → one retry back to /call/lead-capture.
+    Timeout/ambiguous → close anyway (lead already written).
+    """
+    cfg = load_config()
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    speech_lower = SpeechResult.strip().lower()
+
+    yes_signals = ["yes", "yeah", "that's right", "correct", "yep", "sure", "right", "uh-huh"]
+    no_signals = ["no", "nope", "wrong", "that's not", "not right", "incorrect"]
+
+    if any(s in speech_lower for s in yes_signals) or Digits == "1":
+        conn = get_db()
+        try:
+            conn.execute("UPDATE leads SET status = 'confirmed' WHERE call_sid = ?", (CallSid,))
+            conn.commit()
+        finally:
+            conn.close()
+        log.info(f"LeadCaptureConfirm  SID={CallSid}  status=confirmed")
+        await broadcast_dashboard({"event": "lead_confirmed", "sid": CallSid})
+        call_info = active_calls.get(CallSid, {})
+        caller_number = call_info.get("from", "unknown")
+        if CallSid in active_calls:
+            active_calls[CallSid]["classification"] = "hot_lead"
+        _close_call(CallSid, caller_number, "hot_lead", cfg)
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("Perfect. Nick will call you personally. Have a great day.", base_url)}
+  <Hangup/>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    if any(s in speech_lower for s in no_signals):
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("No problem. Give me your name and the best number to reach you.", base_url)}
+  <Gather input="speech" action="{base_url}/call/lead-capture"
+          speechTimeout="auto" timeout="15" language="en-US">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/voicemail</Redirect>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # Ambiguous or timeout — lead already written, close cleanly.
+    call_info = active_calls.get(CallSid, {})
+    caller_number = call_info.get("from", "unknown")
+    _close_call(CallSid, caller_number, "voicemail_left", cfg)
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("Got it. Nick will be in touch. Thank you for your time.", base_url)}
+  <Hangup/>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
 @app.post("/call/engage-response")
 async def engage_response(
     request: Request,
@@ -1462,7 +2326,7 @@ async def engage_response(
     Caller responded to anything PB said.
     Yes (first time only) → lead capture pitch.
     Wants out → voicemail.
-    Everything else → immediate filler + redirect to /call/engage-followup where Haiku thinks.
+    Everything else → score complexity → fire Claude in background → redirect to /call/filler-loop.
     """
     cfg = load_config()
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
@@ -1530,14 +2394,115 @@ async def engage_response(
 </Response>"""
         return Response(content=twiml, media_type="application/xml")
 
-    # Cache miss — play filler chain immediately, generate fresh in engage-followup.
-    # Chain duration covers Haiku + ElevenLabs latency before Twilio hits the Redirect.
-    chain_name = _select_chain(speech)
-    encoded_speech = urllib.parse.quote(speech, safe="")
+    # Cache miss — fire Claude immediately in background, race it against the filler queue.
+    call = active_calls.get(CallSid, {})
+    complexity = _score_complexity(speech, call)
+    filler_ids = _build_filler_queue(speech, complexity)
+
+    if CallSid in active_calls:
+        active_calls[CallSid]["filler_queue"] = filler_ids
+        active_calls[CallSid]["pending_response"] = None
+        active_calls[CallSid]["pitched_ad"] = call.get("pitched_ad", False)
+
+    asyncio.create_task(_generate_and_store_followup(speech, transcript_so_far, cfg, CallSid))
+
+    log.info(f"EngageResponse  SID={CallSid}  complexity={complexity}  queue={filler_ids}")
+
+    # Pop the first filler immediately — starts covering latency before filler-loop is even hit
+    first_filler = filler_ids[0] if filler_ids else "hmm"
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  {_play_filler_chain(chain_name, base_url)}
-  <Redirect method="POST">{base_url}/call/engage-followup?speech={encoded_speech}&amp;sid={CallSid}</Redirect>
+  {_play_filler_by_id(first_filler, base_url)}
+  <Pause length="1"/>
+  <Redirect method="POST">{base_url}/call/filler-loop?sid={CallSid}</Redirect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/call/filler-loop")
+async def filler_loop(
+    request: Request,
+    sid: str = "",
+    CallSid: str = Form(default=""),
+):
+    """
+    Polls for the background Claude response while filler phrases play.
+    Each redirect pops one filler from the queue. When the response is ready,
+    serves it immediately. When queue empties without a response, degrades gracefully.
+
+    Race model: Claude fires at engage-response time. This loop covers the wait.
+    Twilio RTT per redirect ~200ms — each iteration is one poll + one filler play.
+    """
+    cfg = load_config()
+    base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
+    call_sid = sid or CallSid
+    call = active_calls.get(call_sid, {})
+
+    pending = call.get("pending_response")
+
+    # Response ready — serve it immediately, start the precache pipeline
+    if pending and pending != "__failed__":
+        transcript_so_far = call.get("transcript", [])
+        asyncio.create_task(_precache_predictions(pending, transcript_so_far, cfg, call_sid))
+        if call_sid in active_calls:
+            active_calls[call_sid]["pending_response"] = None
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play(pending, base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
+    <Pause length="1"/>
+  </Gather>
+  {_play_filler_by_id("im-listening", base_url) or _play_filler("im-listening.wav", base_url)}
+  <Gather input="speech dtmf" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="8" language="en-US" finishOnKey="#">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/voicemail</Redirect>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # Queue has more fillers — pop one and loop back
+    filler_queue = list(call.get("filler_queue", []))
+    if filler_queue:
+        next_filler = filler_queue.pop(0)
+        if call_sid in active_calls:
+            active_calls[call_sid]["filler_queue"] = filler_queue
+        filler_play = _play_filler_by_id(next_filler, base_url)
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {filler_play}
+  <Pause length="1"/>
+  <Redirect method="POST">{base_url}/call/filler-loop?sid={call_sid}</Redirect>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+    # Queue exhausted — response still not ready (or failed)
+    # Graceful degradation: offer ad if not yet heard, then message option
+    log.warning(f"FillerLoop queue exhausted  SID={call_sid}  response_ready={bool(pending)}")
+    already_pitched = call.get("pitched", False)
+
+    if not already_pitched:
+        if call_sid in active_calls:
+            active_calls[call_sid]["pitched"] = True
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("While you're waiting — PhoneBuddy answers your calls in your own voice, screens the noise, and captures every lead. Want to hear more, or shall I take a message?", base_url)}
+  <Gather input="speech" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="10" language="en-US">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/voicemail</Redirect>
+</Response>"""
+    else:
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  {_play("I want to make sure I give you a good answer. Would you like to leave a message and I'll have Nick follow up personally?", base_url)}
+  <Gather input="speech" action="{base_url}/call/engage-response"
+          speechTimeout="auto" timeout="10" language="en-US">
+    <Pause length="1"/>
+  </Gather>
+  <Redirect>{base_url}/call/voicemail</Redirect>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
 
@@ -1550,8 +2515,9 @@ async def engage_followup(
     CallSid: str = Form(default=""),
 ):
     """
-    Called after the filler plays. Haiku generates the follow-up question here.
-    By the time Twilio hits this endpoint the filler has already played — latency is hidden.
+    Legacy synchronous path — kept as safety valve.
+    Normal path: engage-response fires Claude in background → filler-loop polls → serves when ready.
+    This endpoint runs Claude synchronously and is only hit if filler-loop is bypassed.
     """
     cfg = load_config()
     base_url = PUBLIC_URL or str(request.base_url).rstrip("/")
@@ -1559,11 +2525,16 @@ async def engage_followup(
     call = active_calls.get(call_sid, {})
     transcript_so_far = call.get("transcript", [])
 
+    t0 = time.monotonic()
     followup = await _generate_followup(speech, transcript_so_far, cfg)
-    log.info(f"Follow-up generated  SID={call_sid}  question='{followup}'")
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    _RESPONSE_LATENCY.append(elapsed_ms)
+    log.info(f"Follow-up generated  SID={call_sid}  latency={elapsed_ms}ms  question='{followup}'")
 
     # Fire background precache — predicts next 5 replies while caller listens to this one
     asyncio.create_task(_precache_predictions(followup, transcript_so_far, cfg, call_sid))
+
+    im_listening = _play_filler_by_id("im-listening", base_url) or _play_filler("im-listening.wav", base_url)
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -1572,7 +2543,7 @@ async def engage_followup(
           speechTimeout="auto" timeout="10" language="en-US" finishOnKey="#">
     <Pause length="1"/>
   </Gather>
-  {_play_filler("im-listening.wav", base_url)}
+  {im_listening}
   <Gather input="speech dtmf" action="{base_url}/call/engage-response"
           speechTimeout="auto" timeout="8" language="en-US" finishOnKey="#">
     <Pause length="1"/>
@@ -1702,6 +2673,7 @@ async def message_saved(
     call_info = active_calls.get(CallSid, {})
     caller_number = call_info.get("from") or From or "unknown"
     duration = int(RecordingDuration) if RecordingDuration.isdigit() else 0
+    recording_left = duration > 0
     log.info(f"MessageSaved  SID={CallSid}  caller={caller_number}  duration={duration}s")
     await broadcast_dashboard({
         "event": "message_saved",
@@ -1710,6 +2682,8 @@ async def message_saved(
         "duration_sec": duration,
         "recording_url": RecordingUrl,
     })
+    completion = _derive_completion_type(call_info, recording_left=recording_left)
+    _close_call(CallSid, caller_number, completion, cfg)
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   {_play("Thank you. I'll make sure Nick gets your message. Have a great day. Goodbye.", base_url)}
